@@ -1,3 +1,4 @@
+
 import torch
 from torch import nn
 import numpy as np
@@ -14,13 +15,11 @@ class PFRNNBaseCell(nn.Module):
         All particles in PF-RNNs are processed in parallel to benefit from GPU parallelization.
     """
 
-    def __init__(self, num_particles, input_size, hidden_size, ext_obs, ext_act, resamp_alpha):
+    def __init__(self, input_size, hidden_size, num_particles, resamp_alpha):
         """
-        :param num_particles: number of particles for a PF-RNN
         :param input_size: the size of input x_t
         :param hidden_size: the size of the hidden particle h_t^i
-        :param ext_obs: the size for o_t(x_t)
-        :param ext_act: the size for u_t(x_t)
+        :param num_particles: number of particles for a PF-RNN
         :param resamp_alpha: the control parameter \alpha for soft-resampling.
         We use the importance sampling with a proposal distribution q(i) = \alpha w_t^i + (1 - \alpha) (1 / K)
         """
@@ -28,22 +27,7 @@ class PFRNNBaseCell(nn.Module):
         self.num_particles = num_particles
         self.input_size = input_size
         self.h_dim = hidden_size
-        self.ext_obs = ext_obs
-        self.ext_act = ext_act
         self.resamp_alpha = resamp_alpha
-
-        self.obs_extractor = nn.Sequential(
-            nn.Linear(self.input_size, self.ext_obs),
-            nn.LeakyReLU()
-        )
-        self.act_extractor = nn.Sequential(
-            nn.Linear(self.input_size, self.ext_act),
-            nn.LeakyReLU()
-        )
-
-        self.fc_obs = nn.Linear(self.ext_obs + self.h_dim, 1)
-
-        self.batch_norm = nn.BatchNorm1d(self.num_particles)
 
     def resampling(self, particles, prob):
         """
@@ -67,13 +51,7 @@ class PFRNNBaseCell(nn.Module):
         indices = offset + indices * batch_size
         flatten_indices = indices.view(-1, 1).squeeze()
 
-        # PFLSTM
-        if type(particles) == tuple:
-            particles_new = (particles[0][flatten_indices],
-                             particles[1][flatten_indices])
-        # PFGRU
-        else:
-            particles_new = particles[flatten_indices]
+        particles_new = particles[flatten_indices]
 
         prob_new = torch.exp(prob.view(-1, 1)[flatten_indices])
         prob_new = prob_new / (self.resamp_alpha * prob_new + (1 -
@@ -93,6 +71,7 @@ class PFRNNBaseCell(nn.Module):
         :return: new samples from the Gaussian distribution
         """
         std = torch.nn.functional.softplus(var)
+        # TODO this is weird
         if torch.cuda.is_available():
             eps = torch.cuda.FloatTensor(std.shape).normal_()
         else:
@@ -101,87 +80,138 @@ class PFRNNBaseCell(nn.Module):
         return mu + eps * std
 
 
-class PFLSTMCell(PFRNNBaseCell):
-    def __init__(self, num_particles, input_size, hidden_size, ext_obs, ext_act, resamp_alpha):
-        super().__init__(num_particles, input_size,
-                         hidden_size, ext_obs, ext_act, resamp_alpha)
-
-        self.fc_ih = nn.Linear(self.ext_act, 5 * self.h_dim)
-        self.fc_hh = nn.Linear(self.h_dim, 5 * self.h_dim)
-
-    def forward(self, input_, hx):
-        h0, c0, p0 = hx
-        batch_size = h0.size(0)
-        wh_b = self.fc_hh(h0)
-
-        # by default assume input_ = (obs, control)
-
-        obs = self.obs_extractor(input_)
-        act = self.act_extractor(input_)
-
-        wi = self.fc_ih(act)
-        s = wh_b + wi
-        f, i, o, mu, var = torch.split(s, split_size_or_sections=self.h_dim,
-                                       dim=1)
-        g_ = self.reparameterize(mu, var).view(
-            self.num_particles, -1, self.h_dim).transpose(0, 1).contiguous()
-        g = self.batch_norm(g_).transpose(
-            0, 1).contiguous().view(-1, self.h_dim)
-        c1 = torch.sigmoid(f) * c0 + torch.sigmoid(i) * \
-            nn.functional.leaky_relu(g)
-        h1 = torch.sigmoid(o) * torch.tanh(c1)
-
-        att = torch.cat((obs, h1), dim=1)
-        logpdf_obs = self.fc_obs(att)
-        # logpdf_obs = nn.functional.relu6(logpdf_obs).view(self.num_particles, -1, 1) - 3 # hack to shape the range obs logpdf_obs into [-3, 3] for numerical stability
-        p1 = logpdf_obs.view(self.num_particles, -1, 1) + \
-            p0.view(self.num_particles, -1, 1)
-
-        p1 = p1 - torch.logsumexp(p1, dim=0, keepdim=True)
-
-        (h1, c1), p1 = self.resampling((h1, c1), p1)
-
-        return h1, c1, p1
-
-
 class PFGRUCell(PFRNNBaseCell):
-    def __init__(self, num_particles, input_size, hidden_size, ext_obs, ext_act, resamp_alpha):
-        super().__init__(num_particles, input_size,
-                         hidden_size, ext_obs, ext_act, resamp_alpha)
-        self.fc_z = nn.Linear(self.h_dim + self.ext_act, self.h_dim)
-        self.fc_r = nn.Linear(self.h_dim + self.ext_act, self.h_dim)
-        self.fc_n = nn.Linear(self.h_dim + self.ext_act, self.h_dim * 2)
+    """
+    Based on:
+    Particle Filter Recurrent Neural Networks (2020)
+    https://github.com/Yusufma03/pfrnns
+    """
+    # TODO document differences with original implementation
+    def __init__(
+            self,
+            input_size,
+            hidden_size,
+            num_particles,
+            resamp_alpha):
 
-    def forward(self, input_, hx):
+        super().__init__(
+            input_size,
+            hidden_size,
+            num_particles,
+            resamp_alpha)
+
+        self.input_size = input_size
+        self.h_dim = hidden_size
+        self.fc_z = nn.Linear(self.h_dim + self.input_size, self.h_dim)
+        self.fc_r = nn.Linear(self.h_dim + self.input_size, self.h_dim)
+        self.fc_n = nn.Linear(self.h_dim + self.input_size, self.h_dim * 2)
+        self.fc_obs = nn.Linear(self.input_size + self.h_dim, 1)
+        self.batch_norm = nn.BatchNorm1d(self.num_particles)
+
+    # TODO
+    # def reset_parameters(self):
+    #     std = 1.0 / np.sqrt(self.hidden_size)
+    #     for w in self.parameters():
+    #         w.data.uniform_(-std, std)
+
+    def forward(self, input, hx):
+        # hx is composed of hidden state (h0) and log(weights) (p0)
         h0, p0 = hx
 
-        # by default assume input = (obs, control)
-        obs = self.obs_extractor(input_)
-        act = self.act_extractor(input_)
-
-        z = torch.sigmoid(self.fc_z(torch.cat((h0, act), dim=1)))
-        r = torch.sigmoid(self.fc_r(torch.cat((h0, act), dim=1)))
-        n = self.fc_n(torch.cat((r * h0, act), dim=1))
+        # update gate
+        z = torch.sigmoid(self.fc_z(torch.cat((h0, input), dim=1)))
+        # reset gate
+        r = torch.sigmoid(self.fc_r(torch.cat((h0, input), dim=1)))
+        # memory
+        n = self.fc_n(torch.cat((r * h0, input), dim=1))
 
         mu_n, var_n = torch.split(n, split_size_or_sections=self.h_dim, dim=1)
         n = self.reparameterize(mu_n, var_n)
 
-        n = n.view(self.num_particles, -1, self.h_dim).transpose(0,
-                                                                 1).contiguous()
+        # batch norm and relu replace hyperbolic tangen function
+        n = n.view(self.num_particles, -1, self.h_dim).transpose(0, 1).contiguous()
         n = self.batch_norm(n)
         n = n.transpose(0, 1).contiguous().view(-1, self.h_dim)
         n = nn.functional.leaky_relu(n)
 
+        # update of hidden state
         h1 = (1 - z) * n + z * h0
 
-        att = torch.cat((h1, obs), dim=1)
-        logpdf_obs = self.fc_obs(att)
-        # logpdf_obs = nn.functional.relu6(logpdf_obs) - 3 # hack to shape the range obs logpdf_obs into [-3, 3] for numerical stability
-        p1 = logpdf_obs + p0
+        # particle weight update
+        att = torch.cat((h1, input), dim=1)
+        p1 = self.fc_obs(att) + p0
 
+        # normalize log of weights
         p1 = p1.view(self.num_particles, -1, 1)
         p1 = p1 - torch.logsumexp(p1, dim=0, keepdim=True)
 
+        # soft-resampling
         h1, p1 = self.resampling(h1, p1)
 
         return h1, p1
+
+
+class PFGRU(torch.nn.Module):
+    def __init__(
+            self,
+            input_size: int,
+            hidden_size: int,
+            num_particles: int,
+            num_layers: int,
+            dropout_prob: float,
+            resamp_alpha: float,
+            device: str):
+        super().__init__()
+
+        # TODO add support for multiple layers
+        self._num_layers = num_layers
+        self._hidden_size = hidden_size
+        self._num_particles = num_particles
+        self._device = device
+
+        self.rnn_cell = PFGRUCell(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_particles=num_particles,
+            resamp_alpha=resamp_alpha)
+
+        self.to(device)
+
+    def forward(self, input, hidden):
+
+        # input has shape (seq_len, batch, input_dim) (standard PyTorch)
+        # hidden is tuple with shapes:
+        #   (batch_size * num_particles, hidden_size)
+        #   (batch_size * num_particles, 1)
+
+        # repeat the batch dimension when using PF-RNN
+        input = input.repeat(1, self._num_particles, 1)
+        seq_len = input.shape[0]
+        # tuples of hidden state and log(weights)
+        # TODO make tensor?
+        hidden_states = []#torch.zeros((seq_len, ), device=self._device)
+        probs = []
+
+        for step in range(seq_len):
+            hidden = self.rnn_cell(input[step], hidden)
+            hidden_states.append(hidden[0])
+            probs.append(hidden[1])
+
+        hidden_states = torch.stack(hidden_states, dim=0)
+        # TODO dropout here?
+        # hidden_states = self.hnn_dropout(hidden_states)
+
+        # calculate mean hidden-state
+        probs = torch.stack(probs, dim=0)
+        prob_reshape = probs.view([seq_len, self._num_particles, -1, 1])
+        hidden_reshape = hidden_states.view([seq_len, self._num_particles, -1, self._hidden_size])
+        y = hidden_reshape * torch.exp(prob_reshape)
+        # sum over particles dimension
+        # y = torch.sum(y, dim=1)
+        
+        # y has shape (seq_len, num_particles, batch, hidden_size)
+        # we swap the first axes to have shape (num_particles, seq_length, ...)
+        y = torch.swapaxes(y, 0, 1)
+
+        # TODO output hidden state
+        return y, None

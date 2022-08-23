@@ -1,8 +1,11 @@
 
+import pfrnn
+
 import copy
 import functools
+import numpy as np
 import torch
-from typing import List, Callable
+from typing import Callable, List, Tuple
 
 
 class MonteCarloDropout(torch.nn.Dropout):
@@ -97,10 +100,10 @@ class UncertaintyMLP(torch.nn.Module):
         for i in range(self._num_models):
             # iterate over passes of single MC Dropout model
             for j in range(self._num_passes):
-                layer_input = input
+                output = input
                 for layer in self._models[i]:
-                    layer_input = layer(layer_input)
-                preds[i, j] = layer_input
+                    output = layer(output)
+                preds[i, j] = output
 
         # calculate mean and variance of models and passes
         output_mean = torch.mean(preds, dim=(0, 1))
@@ -109,8 +112,7 @@ class UncertaintyMLP(torch.nn.Module):
         return output_mean, output_var, preds
 
 
-
-class UncertaintyRNN(torch.nn.Module):
+class UncertaintyGRU(torch.nn.Module):
     """
     """
 
@@ -136,7 +138,7 @@ class UncertaintyRNN(torch.nn.Module):
 
         # create model
         model = torch.nn.Module()
-        model.rnn = torch.nn.GRU(
+        model.gru = torch.nn.GRU(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
@@ -154,55 +156,41 @@ class UncertaintyRNN(torch.nn.Module):
 
         self.to(device)
 
-    @staticmethod
-    def _init_weights(layer):
-        if isinstance(layer, torch.nn.GRU):
-            # reset weights *and* biases
-            layer.reset_parameters()
-            # overwrite weights if desired
-            # TODO add custom weight initialization
-        elif isinstance(layer, torch.nn.Linear):
-            # reset weights *and* biases
-            layer.reset_parameters()
-            # overwrite weights if desired
-            # TODO add custom weight initialization
-
     def reset_parameters(self):
-        self._models.apply(self._init_weights)
+        for layer in self.modules():
+            if isinstance(layer, torch.nn.Linear):
+                # reset weights *and* biases
+                layer.reset_parameters()
+            elif isinstance(layer, torch.nn.GRU):
+                # reset weights *and* biases
+                layer.reset_parameters()
 
-    def forward(self, input, hidden=None, return_predictions=False):
+    def forward(self, input, hidden=None):
 
         # always have dropout enabled
         self.train()
-
-        # hidden has to be of shape (num_models, ...)
-        if hidden is None:
-            hidden = self.init_hidden()
 
         # include sequence length and batch dimensions in predictions array
         preds = torch.zeros(
             (self._num_models, self._num_passes, *input.shape[:-1], self._output_size),
             device=self._device)
+        hidden_out = torch.zeros_like(hidden)
 
         # iterate over Ensemble models
         for i in range(self._num_models):
             # iterate over passes of single MC Dropout model
             for j in range(self._num_passes):
-                layer_input = input#.detach()
-                # calling clone is needed to avoid an in-place operation (breaks autograd)
-                layer_input, hidden[i, j] = self._models[i].rnn(layer_input, hidden[i, j].clone())
-                layer_input = self._models[i].activation(layer_input)
-                layer_input = self._models[i].linear(layer_input)
-                preds[i, j] = layer_input
+                output = input
+                output, hidden_out[i, j] = self._models[i].gru(output, hidden[i, j])
+                output = self._models[i].activation(output)
+                output = self._models[i].linear(output)
+                preds[i, j] = output
 
         # calculate mean and variance of models and passes
         output_mean = torch.mean(preds, dim=(0, 1))
         output_var = torch.var(preds, dim=(0, 1))
 
-        if return_predictions:
-            return output_mean, output_var, preds, hidden
-
-        return output_mean, output_var, hidden
+        return output_mean, output_var, preds, hidden_out
 
     def init_hidden(self, batch_size=None):
         if batch_size == None:
@@ -211,5 +199,92 @@ class UncertaintyRNN(torch.nn.Module):
         else:
             shape = (self._num_models, self._num_passes, self._num_layers, batch_size, self._hidden_size)
 
-        hidden = torch.zeros(shape, device=self._device)
+        # TODO use random initial values for more diversity
+        # init_func = torch.zeros
+        init_func = torch.rand
+        hidden = init_func(shape, device=self._device)
+        return hidden
+
+
+class UncertaintyPFGRU(torch.nn.Module):
+    """
+    """
+
+    def __init__(
+            self,
+            input_size: int,
+            hidden_size: int,
+            output_size: int,
+            num_layers: int,
+            num_particles: int,
+            dropout_prob: float,
+            resamp_alpha: float,
+            device: str):
+
+        super().__init__()
+
+        self._hidden_size = hidden_size
+        self._output_size = output_size
+        self._num_layers = num_layers
+        self._num_particles = num_particles
+        self._device = device
+
+        self._pfgru = pfrnn.PFGRU(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_particles=num_particles,
+            num_layers=num_layers,
+            dropout_prob=dropout_prob,
+            resamp_alpha=resamp_alpha,
+            device=device)
+        self._activation = torch.nn.LeakyReLU()
+        self._linear = torch.nn.Linear(hidden_size, output_size)
+
+        self.reset_parameters()
+
+        self.to(device)
+
+    def forward(self, input: torch.Tensor, hidden: Tuple[torch.Tensor, torch.Tensor]):
+
+        preds, hidden = self._pfgru(input, hidden)
+        preds = self._activation(preds)
+        preds = self._linear(preds)
+        # preds have shape (num_particles, seq_len, batch, output_size)
+
+        # calculate mean and variance of particles
+        # Paper's code used sum over particles instead of mean.
+        # However, this was before activation and linear layers.
+        # Also, when we train on individual predictions the sum of outputs is scaled wrongly
+        # TODO maybe with elbo loss we can use the sum?
+        # output_sum = torch.sum(preds, dim=0)
+        output_mean = torch.mean(preds, dim=0)
+        output_var = torch.var(preds, dim=0)
+
+        return output_mean, output_var, preds, hidden
+
+    @torch.jit.ignore
+    def reset_parameters(self):
+        for layer in self.modules():
+            if isinstance(layer, torch.nn.Linear):
+                # reset weights *and* biases
+                layer.reset_parameters()
+            elif isinstance(layer, torch.nn.BatchNorm1d):
+                # reset weights *and* biases
+                layer.reset_parameters()
+
+    @torch.jit.ignore
+    def init_hidden(self, batch_size=None):
+        # use random initial values for more diversity
+        # func = torch.zeros
+        func = torch.rand
+        if batch_size is None:
+            batch_size = 1
+        h0 = func(
+            (self._num_layers, batch_size * self._num_particles, self._hidden_size), 
+            device=self._device)
+        p0 = np.log(1 / self._num_particles) * torch.ones(
+            (self._num_layers, batch_size * self._num_particles, 1),
+            device=self._device)
+        hidden = (h0, p0)
+
         return hidden

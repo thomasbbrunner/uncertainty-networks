@@ -1,10 +1,16 @@
 
 import torch
 from torch import nn
+from typing import Tuple
 import numpy as np
 
 
-class PFRNNBaseCell(nn.Module):
+class PFGRUCell(torch.nn.Module):
+    """
+    Based on:
+    Particle Filter Recurrent Neural Networks (2020)
+    https://github.com/Yusufma03/pfrnns
+    """
     """
     This is the base class for the PF-RNNs. We implement the shared functions here, including
         1. soft-resampling
@@ -14,8 +20,13 @@ class PFRNNBaseCell(nn.Module):
 
         All particles in PF-RNNs are processed in parallel to benefit from GPU parallelization.
     """
-
-    def __init__(self, input_size, hidden_size, num_particles, resamp_alpha):
+    # TODO document differences with original implementation
+    def __init__(
+            self,
+            input_size,
+            hidden_size,
+            num_particles,
+            resamp_alpha):
         """
         :param input_size: the size of input x_t
         :param hidden_size: the size of the hidden particle h_t^i
@@ -23,11 +34,17 @@ class PFRNNBaseCell(nn.Module):
         :param resamp_alpha: the control parameter \alpha for soft-resampling.
         We use the importance sampling with a proposal distribution q(i) = \alpha w_t^i + (1 - \alpha) (1 / K)
         """
-        super(PFRNNBaseCell, self).__init__()
-        self.num_particles = num_particles
+        super().__init__()
+
         self.input_size = input_size
         self.h_dim = hidden_size
+        self.num_particles = num_particles
         self.resamp_alpha = resamp_alpha
+        self.fc_z = nn.Linear(self.h_dim + self.input_size, self.h_dim)
+        self.fc_r = nn.Linear(self.h_dim + self.input_size, self.h_dim)
+        self.fc_n = nn.Linear(self.h_dim + self.input_size, self.h_dim * 2)
+        self.fc_obs = nn.Linear(self.input_size + self.h_dim, 1)
+        self.batch_norm = nn.BatchNorm1d(self.num_particles)
 
     def resampling(self, particles, prob):
         """
@@ -38,24 +55,25 @@ class PFRNNBaseCell(nn.Module):
         :param prob: weights for particles in the log space. Each tensor has a shape: [num_particles * batch_size, 1]
         :return: resampled particles and weights according to soft-resampling scheme.
         """
-        resamp_prob = self.resamp_alpha * torch.exp(prob) + (1 -
-                                                             self.resamp_alpha) * 1 / self.num_particles
+        resamp_prob = self.resamp_alpha * torch.exp(prob) + (1 - self.resamp_alpha) * 1 / self.num_particles
         resamp_prob = resamp_prob.view(self.num_particles, -1)
         indices = torch.multinomial(resamp_prob.transpose(0, 1),
                                     num_samples=self.num_particles, replacement=True)
         batch_size = indices.size(0)
         indices = indices.transpose(1, 0).contiguous()
-        offset = torch.arange(batch_size).type(torch.LongTensor).unsqueeze(0)
-        if torch.cuda.is_available():
-            offset = offset.cuda()
+        offset = torch.arange(batch_size, dtype=torch.long, device=indices.device).unsqueeze(0)
         indices = offset + indices * batch_size
         flatten_indices = indices.view(-1, 1).squeeze()
 
         particles_new = particles[flatten_indices]
 
         prob_new = torch.exp(prob.view(-1, 1)[flatten_indices])
-        prob_new = prob_new / (self.resamp_alpha * prob_new + (1 -
-                                                               self.resamp_alpha) / self.num_particles)
+        prob_new = prob_new / (self.resamp_alpha * prob_new + (1 - self.resamp_alpha) / self.num_particles)
+        
+        # TODO here is where I get problems
+        if not torch.all(prob_new > 0.):
+            breakpoint()
+
         prob_new = torch.log(prob_new).view(self.num_particles, -1, 1)
         prob_new = prob_new - torch.logsumexp(prob_new, dim=0, keepdim=True)
         prob_new = prob_new.view(-1, 1)
@@ -71,50 +89,10 @@ class PFRNNBaseCell(nn.Module):
         :return: new samples from the Gaussian distribution
         """
         std = torch.nn.functional.softplus(var)
-        # TODO this is weird
-        if torch.cuda.is_available():
-            eps = torch.cuda.FloatTensor(std.shape).normal_()
-        else:
-            eps = torch.FloatTensor(std.shape).normal_()
-
+        eps = torch.randn_like(std)
         return mu + eps * std
 
-
-class PFGRUCell(PFRNNBaseCell):
-    """
-    Based on:
-    Particle Filter Recurrent Neural Networks (2020)
-    https://github.com/Yusufma03/pfrnns
-    """
-    # TODO document differences with original implementation
-    def __init__(
-            self,
-            input_size,
-            hidden_size,
-            num_particles,
-            resamp_alpha):
-
-        super().__init__(
-            input_size,
-            hidden_size,
-            num_particles,
-            resamp_alpha)
-
-        self.input_size = input_size
-        self.h_dim = hidden_size
-        self.fc_z = nn.Linear(self.h_dim + self.input_size, self.h_dim)
-        self.fc_r = nn.Linear(self.h_dim + self.input_size, self.h_dim)
-        self.fc_n = nn.Linear(self.h_dim + self.input_size, self.h_dim * 2)
-        self.fc_obs = nn.Linear(self.input_size + self.h_dim, 1)
-        self.batch_norm = nn.BatchNorm1d(self.num_particles)
-
-    # TODO
-    # def reset_parameters(self):
-    #     std = 1.0 / np.sqrt(self.hidden_size)
-    #     for w in self.parameters():
-    #         w.data.uniform_(-std, std)
-
-    def forward(self, input, hx):
+    def forward(self, input: torch.Tensor, hx: Tuple[torch.Tensor, torch.Tensor]):
         # hx is composed of hidden state (h0) and log(weights) (p0)
         h0, p0 = hx
 
@@ -125,10 +103,10 @@ class PFGRUCell(PFRNNBaseCell):
         # memory
         n = self.fc_n(torch.cat((r * h0, input), dim=1))
 
-        mu_n, var_n = torch.split(n, split_size_or_sections=self.h_dim, dim=1)
+        mu_n, var_n = torch.split(n, self.h_dim, dim=1)
         n = self.reparameterize(mu_n, var_n)
 
-        # batch norm and relu replace hyperbolic tangen function
+        # batch norm and relu replace hyperbolic tangent function
         n = n.view(self.num_particles, -1, self.h_dim).transpose(0, 1).contiguous()
         n = self.batch_norm(n)
         n = n.transpose(0, 1).contiguous().view(-1, self.h_dim)
@@ -163,55 +141,82 @@ class PFGRU(torch.nn.Module):
             device: str):
         super().__init__()
 
-        # TODO add support for multiple layers
         self._num_layers = num_layers
         self._hidden_size = hidden_size
         self._num_particles = num_particles
         self._device = device
 
-        self.rnn_cell = PFGRUCell(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_particles=num_particles,
-            resamp_alpha=resamp_alpha)
+        self._rnn_cells = torch.nn.ModuleList()
+        self._rnn_cells.append(
+            PFGRUCell(
+                input_size=input_size,
+                hidden_size=hidden_size,
+                num_particles=num_particles,
+                resamp_alpha=resamp_alpha))
+        for _ in range(num_layers - 1):
+            self._rnn_cells.append(
+                PFGRUCell(
+                    input_size=hidden_size,
+                    hidden_size=hidden_size,
+                    num_particles=num_particles,
+                    resamp_alpha=resamp_alpha))
+
+        # self._dropout = nn.Dropout(dropout_prob)
 
         self.to(device)
 
-    def forward(self, input, hidden):
+    def forward(self, input: torch.Tensor, hidden: Tuple[torch.Tensor, torch.Tensor]):
 
-        # input has shape (seq_len, batch, input_dim) (standard PyTorch)
+        no_batch = False
+        if input.ndim == 2:
+            # add batch dimension
+            input = input[..., None, :]
+            no_batch = True
+
+        # input has shape (seq_len, batch, input_size) (standard PyTorch)
         # hidden is tuple with shapes:
-        #   (batch_size * num_particles, hidden_size)
-        #   (batch_size * num_particles, 1)
+        #   (num_layers, batch_size * num_particles, hidden_size)
+        #   (num_layers, batch_size * num_particles, 1)
 
         # repeat the batch dimension when using PF-RNN
         input = input.repeat(1, self._num_particles, 1)
+
+        # split into hidden state and log(weights)
+        hidden, probs = hidden
+        # unbind tensor and create list to prevent in-place operations, which
+        # lead to autograd errors
+        hidden = list(hidden.unbind(0))
+        probs = list(probs.unbind(0))
+
         seq_len = input.shape[0]
-        # tuples of hidden state and log(weights)
-        # TODO make tensor?
-        hidden_states = []#torch.zeros((seq_len, ), device=self._device)
-        probs = []
+        # outputs of shape (seq_len, batch, ?)
+        output = []
 
         for step in range(seq_len):
-            hidden = self.rnn_cell(input[step], hidden)
-            hidden_states.append(hidden[0])
-            probs.append(hidden[1])
+            layer_input = input[step]
+            for layer, rnn_cell in enumerate(self._rnn_cells):
+                hidden[layer], probs[layer] = rnn_cell(layer_input, (hidden[layer], probs[layer]))
 
-        hidden_states = torch.stack(hidden_states, dim=0)
-        # TODO dropout here?
-        # hidden_states = self.hnn_dropout(hidden_states)
+                # hidden[layer] = self._dropout(hidden[layer])
 
-        # calculate mean hidden-state
+                # calculate mean hidden-state
+                layer_input = hidden[layer] * torch.exp(probs[layer])
+
+            output.append(layer_input)
+
+        output = torch.stack(output, dim=0)
+        # separate batch and particles dimensions
+        # output has shape (seq_len, num_particles, batch, hidden_size)
+        output = output.reshape([seq_len, self._num_particles, -1, self._hidden_size])
+
+        # swap the first axes to have shape (num_particles, seq_length, ...)
+        output = torch.swapaxes(output, 0, 1)
+
+        # remove batch dimension if required
+        if no_batch:
+            output = torch.squeeze(output, dim=2)
+
+        hidden = torch.stack(hidden, dim=0)
         probs = torch.stack(probs, dim=0)
-        prob_reshape = probs.view([seq_len, self._num_particles, -1, 1])
-        hidden_reshape = hidden_states.view([seq_len, self._num_particles, -1, self._hidden_size])
-        y = hidden_reshape * torch.exp(prob_reshape)
-        # sum over particles dimension
-        # y = torch.sum(y, dim=1)
-        
-        # y has shape (seq_len, num_particles, batch, hidden_size)
-        # we swap the first axes to have shape (num_particles, seq_length, ...)
-        y = torch.swapaxes(y, 0, 1)
 
-        # TODO output hidden state
-        return y, None
+        return output, (hidden, probs)

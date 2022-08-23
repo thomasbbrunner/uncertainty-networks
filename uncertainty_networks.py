@@ -51,8 +51,6 @@ class UncertaintyMLP(torch.nn.Module):
 
         super().__init__()
 
-        # TODO do parameter checks
-        # assert model_precision > 0
         self._output_size = output_size
         self._init_func = init_func
         self._num_passes = num_passes
@@ -79,19 +77,16 @@ class UncertaintyMLP(torch.nn.Module):
 
         self.to(device)
 
-    @staticmethod
-    def _init_weights(layer, init_func):
-        if isinstance(layer, torch.nn.Linear):
-            # reset weights *and* biases
-            layer.reset_parameters()
-            # overwrite weights if desired
-            if init_func is not None:
-                init_func(layer.weight)
-
     def reset_parameters(self):
-        self._models.apply(functools.partial(self._init_weights, init_func=self._init_func))
+        for layer in self.modules():
+            if isinstance(layer, torch.nn.Linear):
+                # reset weights *and* biases
+                layer.reset_parameters()
+                # overwrite weights if desired
+                if self._init_func is not None:
+                    self._init_func(layer.weight)
 
-    def forward(self, input, return_predictions=False):
+    def forward(self, input):
 
         # include batch dimensions in predictions array
         preds = torch.zeros(
@@ -111,10 +106,8 @@ class UncertaintyMLP(torch.nn.Module):
         output_mean = torch.mean(preds, dim=(0, 1))
         output_var = torch.var(preds, dim=(0, 1))
 
-        if return_predictions:
-            return output_mean, output_var, preds
+        return output_mean, output_var, preds
 
-        return output_mean, output_var
 
 
 class UncertaintyRNN(torch.nn.Module):

@@ -3,7 +3,6 @@ from uncertainty_networks import UncertaintyMLP
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import rslgym.algorithm.modules as rslgym_module
 
 # reproducibility
 torch.manual_seed(0)
@@ -28,7 +27,7 @@ def train(X_train, y_train, model, epochs, device, shuffle, loss_type):
             optimizer.zero_grad()
 
             x, y = batch
-            means, vars, preds = model(x, return_predictions=True)
+            means, vars, preds = model(x)
 
             # loss on mean
             if loss_type == "mean":
@@ -59,7 +58,7 @@ def test(X_test, y_test, model, device):
         y_test = torch.Tensor(y_test).to(device)
         model.eval()
         model.to(device)
-        mean, var, preds = model(X_test, return_predictions=True)
+        mean, var, preds = model(X_test)
         loss = loss_fn(mean, y_test)
         return (
             mean.to("cpu").numpy(),
@@ -87,12 +86,10 @@ X = np.linspace(-10, 10, 1000).reshape(-1, 1)
 train_indices = np.index_exp[:200, 300:700, 800:]
 test_indices = np.index_exp[200:300, 700:800]
 X_train = np.concatenate([X[i] for i in train_indices])
-X_test = np.concatenate([X[i] for i in test_indices])
 def y_func(x):
     return x * np.sin(x) + x * np.cos(2*x)
 y = y_func(X)
 y_train = y_func(X_train)
-y_test = y_func(X_test)
 
 # train Deterministic Baseline
 mlp_0 = UncertaintyMLP(

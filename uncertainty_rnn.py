@@ -1,5 +1,5 @@
 # %% Setup
-from uncertainty_networks import UncertaintyGRU, UncertaintyPFGRU
+from uncertainty_networks import UncertaintyNetwork
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -109,9 +109,12 @@ def test(X_test, y_test, model, device):
 # parameters
 epochs = 5000
 seq_length = 100
-input_size = 1
-hidden_size = 3
-output_size = 1
+# input sizes of input encoder, gru and latent encoder
+input_size = [1, 3, 3]
+# hidden sizes of input encoder, gru and latent encoder
+hidden_size = [[4, 4], 3, [4, 4]]
+# output sizes of input encoder, and latent encoder
+output_size = [3, 1]
 num_layers = 2
 num_std_plot = 2
 device = "cuda"
@@ -163,12 +166,12 @@ X_test = ang[..., None]
 y_test = vel[..., None]
 
 # train deterministic baseline with sequence length of 1
-rnn_seq = UncertaintyGRU(
+rnn_seq = UncertaintyNetwork(
     input_size=input_size,
     hidden_size=hidden_size,
     output_size=output_size,
     num_layers=num_layers,
-    num_passes=5,
+    num_passes=10,
     num_models=1,
     dropout_prob=0,
     device=device)
@@ -176,12 +179,12 @@ train(X_train_seq, y_train_seq, rnn_seq, epochs, device, shuffle, "pred")
 mean_seq, var_seq, preds_seq, loss_seq = test(X_test, y_test, rnn_seq, device)
 
 # train deterministic baseline
-rnn_0 = UncertaintyGRU(
+rnn_0 = UncertaintyNetwork(
     input_size=input_size,
     hidden_size=hidden_size,
     output_size=output_size,
     num_layers=num_layers,
-    num_passes=5,
+    num_passes=10,
     num_models=1,
     dropout_prob=0,
     device=device)
@@ -189,12 +192,12 @@ train(X_train, y_train, rnn_0, epochs, device, shuffle, "pred")
 mean_0, var_0, preds_0, loss_0 = test(X_test, y_test, rnn_0, device)
 
 # train dropout
-rnn_1 = UncertaintyGRU(
+rnn_1 = UncertaintyNetwork(
     input_size=input_size,
     hidden_size=hidden_size,
     output_size=output_size,
     num_layers=num_layers,
-    num_passes=5,
+    num_passes=10,
     num_models=1,
     dropout_prob=0.05,
     device=device)
@@ -202,30 +205,56 @@ train(X_train, y_train, rnn_1, epochs, device, shuffle, loss_type)
 mean_1, var_1, preds_1, loss_1 = test(X_test, y_test, rnn_1, device)
 
 # train ensemble
-rnn_2 = UncertaintyGRU(
+rnn_2 = UncertaintyNetwork(
     input_size=input_size,
     hidden_size=hidden_size,
     output_size=output_size,
     num_layers=num_layers,
     num_passes=1,
-    num_models=5,
+    num_models=10,
     dropout_prob=0,
     device=device)
 train(X_train, y_train, rnn_2, epochs, device, shuffle, loss_type)
 mean_2, var_2, preds_2, loss_2 = test(X_test, y_test, rnn_2, device)
 
-# train PFGRU (can optionally be used with torch.jit.script)
-rnn_3 = UncertaintyPFGRU(
+# train ensemble with dropout
+rnn_3 = UncertaintyNetwork(
     input_size=input_size,
     hidden_size=hidden_size,
     output_size=output_size,
     num_layers=num_layers,
-    num_particles=5,
+    num_passes=2,
+    num_models=5,
     dropout_prob=0.05,
-    resamp_alpha=0.5, # paper uses 0.5
     device=device)
 train(X_train, y_train, rnn_3, epochs, device, shuffle, loss_type)
 mean_3, var_3, preds_3, loss_3 = test(X_test, y_test, rnn_3, device)
+
+# train ensemble with dropout
+rnn_4 = UncertaintyNetwork(
+    input_size=input_size,
+    hidden_size=hidden_size,
+    output_size=output_size,
+    num_layers=num_layers,
+    num_passes=5,
+    num_models=2,
+    dropout_prob=0.05,
+    device=device)
+train(X_train, y_train, rnn_4, epochs, device, shuffle, loss_type)
+mean_4, var_4, preds_4, loss_4 = test(X_test, y_test, rnn_4, device)
+
+# train PFGRU (can optionally be used with torch.jit.script)
+# rnn_3 = UncertaintyNetwork(
+#     input_size=input_size,
+#     hidden_size=hidden_size,
+#     output_size=output_size,
+#     num_layers=num_layers,
+#     num_particles=5,
+#     dropout_prob=0.05,
+#     resamp_alpha=0.5, # paper uses 0.5
+#     device=device)
+# train(X_train, y_train, rnn_3, epochs, device, shuffle, loss_type)
+# mean_3, var_3, preds_3, loss_3 = test(X_test, y_test, rnn_3, device)
 
 # TODO make PFRNN more diverse
 
@@ -291,10 +320,10 @@ fig.savefig("uncertainty_rnn_baseline.png")
 
 # models
 fig = plt.figure(dpi=300, figsize=(28, 14), constrained_layout=True)
-axs = np.array(fig.subplots(3, 2))
-mean_plot = np.array([mean_1.flatten(), mean_2.flatten(), mean_3.flatten()])
-std_plot = num_std_plot*np.sqrt(np.array([var_1.flatten(), var_2.flatten(), var_3.flatten()]))
-pred_plot = [preds_1, preds_2, preds_3]
+axs = np.array(fig.subplots(4, 2))
+mean_plot = np.array([mean_1.flatten(), mean_2.flatten(), mean_3.flatten(), mean_4.flatten()])
+std_plot = num_std_plot*np.sqrt(np.array([var_1.flatten(), var_2.flatten(), var_3.flatten(), var_4.flatten()]))
+pred_plot = [preds_1, preds_2, preds_3, preds_4]
 # plot function
 for ax in axs.flatten():
     ax.grid()
@@ -303,9 +332,11 @@ for ax in axs.flatten():
     for i in test_indices:
         ax.plot(T[i], vel[i], color="tab:orange", linestyle="--")
 # titles
-axs[0, 0].set_title("MC Dropout (5 passes)\nTest Loss = {:.4}".format(loss_1), loc="left")
-axs[1, 0].set_title("Ensemble (5 models)\nTest Loss = {:.4}".format(loss_2), loc="left")
-axs[2, 0].set_title("Patricle Filter GRU (5 particles)" "\nTest Loss = {:.4}".format(loss_3), loc="left")
+axs[0, 0].set_title("MC Dropout (10 passes)\nTest Loss = {:.4}".format(loss_1), loc="left")
+axs[1, 0].set_title("Ensemble (10 models)\nTest Loss = {:.4}".format(loss_2), loc="left")
+axs[2, 0].set_title("Ensemble (5 models) MC Dropout (2 passes)" "\nTest Loss = {:.4}".format(loss_3), loc="left")
+axs[3, 0].set_title("Ensemble (2 models) MC Dropout (5 passes)" "\nTest Loss = {:.4}".format(loss_4), loc="left")
+# axs[2, 0].set_title("Patricle Filter GRU (5 particles)" "\nTest Loss = {:.4}".format(loss_3), loc="left")
 # plot mean and std
 axs[0, 0].set_title(r"Final Predictions ({}$\sigma$)".format(num_std_plot))
 for i, ax in enumerate(axs[:, 0]):

@@ -1,11 +1,11 @@
 
-import pfrnn
+from pfrnn import PFGRU
 
 import copy
 import functools
 import numpy as np
 import torch
-from typing import Callable, List, Tuple
+from typing import List, Tuple, Sequence
 
 
 class MonteCarloDropout(torch.nn.Dropout):
@@ -45,8 +45,6 @@ class UncertaintyMLP(torch.nn.Module):
             input_size: int,
             hidden_sizes: List[int],
             output_size: int,
-            activation_func: Callable[..., torch.nn.Module],
-            init_func: Callable,
             dropout_prob: float,
             num_passes: int,
             num_models: int,
@@ -55,10 +53,11 @@ class UncertaintyMLP(torch.nn.Module):
         super().__init__()
 
         self._output_size = output_size
-        self._init_func = init_func
+        self._init_func = None # TODO
         self._num_passes = num_passes
         self._num_models = num_models
         self._device = device
+        activation_func = torch.nn.LeakyReLU
 
         # create model
         model = torch.nn.ModuleList()
@@ -89,18 +88,29 @@ class UncertaintyMLP(torch.nn.Module):
                 if self._init_func is not None:
                     self._init_func(layer.weight)
 
-    def forward(self, input):
+    def forward(self, input, input_preds=None):
+
+        # use input_preds instead of hidden
+        # one of them has to be None (xor)
+        assert (input_preds == None) ^ (input == None)
+        use_preds = input_preds != None
 
         # include batch dimensions in predictions array
-        preds = torch.zeros(
-            (self._num_models, self._num_passes, *input.shape[:-1], self._output_size),
-            device=self._device)
+        if use_preds:
+            shape = (*input_preds.shape[:-1], self._output_size)
+        else:
+            shape = (self._num_models, self._num_passes, *input.shape[:-1], self._output_size)
+        preds = torch.zeros(shape, device=self._device)
 
         # iterate over Ensemble models
         for i in range(self._num_models):
             # iterate over passes of single MC Dropout model
             for j in range(self._num_passes):
-                output = input
+                if use_preds:
+                    output = input_preds[i, j]
+                else:
+                    output = input
+    
                 for layer in self._models[i]:
                     output = layer(output)
                 preds[i, j] = output
@@ -120,7 +130,6 @@ class UncertaintyGRU(torch.nn.Module):
             self,
             input_size: int,
             hidden_size: int,
-            output_size: int,
             num_layers: int,
             num_passes: int,
             num_models: int,
@@ -130,26 +139,23 @@ class UncertaintyGRU(torch.nn.Module):
         super().__init__()
 
         self._hidden_size = hidden_size
-        self._output_size = output_size
         self._num_layers = num_layers
         self._num_passes = num_passes
         self._num_models = num_models
         self._device = device
+        self._init_func = None # TODO
 
         # create model
-        model = torch.nn.Module()
-        model.gru = torch.nn.GRU(
+        gru = torch.nn.GRU(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             dropout=dropout_prob)
-        model.activation = torch.nn.LeakyReLU()
-        model.linear = torch.nn.Linear(hidden_size, output_size)
 
         # create ensemble
         self._models = torch.nn.ModuleList()
         for _ in range(self._num_models):
-            self._models.append(copy.deepcopy(model))
+            self._models.append(copy.deepcopy(gru))
 
         # re-initialize parameters to ensure diversity in each model of the ensemble
         self.reset_parameters()
@@ -158,33 +164,35 @@ class UncertaintyGRU(torch.nn.Module):
 
     def reset_parameters(self):
         for layer in self.modules():
-            if isinstance(layer, torch.nn.Linear):
-                # reset weights *and* biases
-                layer.reset_parameters()
-            elif isinstance(layer, torch.nn.GRU):
+            if isinstance(layer, torch.nn.GRU):
                 # reset weights *and* biases
                 layer.reset_parameters()
 
-    def forward(self, input, hidden=None):
+    def forward(self, input, hidden=None, input_preds=None):
+
+        # use input_preds instead of hidden
+        # one of them has to be None (xor)
+        assert (input_preds == None) ^ (input == None)
+        use_preds = input_preds != None
 
         # always have dropout enabled
         self.train()
 
         # include sequence length and batch dimensions in predictions array
-        preds = torch.zeros(
-            (self._num_models, self._num_passes, *input.shape[:-1], self._output_size),
-            device=self._device)
+        if use_preds:
+            shape = (*input_preds.shape[:-1], self._hidden_size)
+        else:
+            shape = (self._num_models, self._num_passes, *input.shape[:-1], self._hidden_size)
+        preds = torch.zeros(shape, device=self._device)
         hidden_out = torch.zeros_like(hidden)
 
         # iterate over Ensemble models
         for i in range(self._num_models):
             # iterate over passes of single MC Dropout model
             for j in range(self._num_passes):
-                output = input
-                output, hidden_out[i, j] = self._models[i].gru(output, hidden[i, j])
-                output = self._models[i].activation(output)
-                output = self._models[i].linear(output)
-                preds[i, j] = output
+                if use_preds:
+                    input = input_preds[i, j]
+                preds[i, j], hidden_out[i, j] = self._models[i](input, hidden[i, j])
 
         # calculate mean and variance of models and passes
         output_mean = torch.mean(preds, dim=(0, 1))
@@ -208,6 +216,8 @@ class UncertaintyGRU(torch.nn.Module):
 
 class UncertaintyPFGRU(torch.nn.Module):
     """
+    TODO:
+        - enable inference on individual predictions (like the other networks)
     """
 
     def __init__(
@@ -224,12 +234,11 @@ class UncertaintyPFGRU(torch.nn.Module):
         super().__init__()
 
         self._hidden_size = hidden_size
-        self._output_size = output_size
         self._num_layers = num_layers
         self._num_particles = num_particles
         self._device = device
 
-        self._pfgru = pfrnn.PFGRU(
+        self._pfgru = PFGRU(
             input_size=input_size,
             hidden_size=hidden_size,
             num_particles=num_particles,
@@ -237,8 +246,6 @@ class UncertaintyPFGRU(torch.nn.Module):
             dropout_prob=dropout_prob,
             resamp_alpha=resamp_alpha,
             device=device)
-        self._activation = torch.nn.LeakyReLU()
-        self._linear = torch.nn.Linear(hidden_size, output_size)
 
         self.reset_parameters()
 
@@ -247,8 +254,6 @@ class UncertaintyPFGRU(torch.nn.Module):
     def forward(self, input: torch.Tensor, hidden: Tuple[torch.Tensor, torch.Tensor]):
 
         preds, hidden = self._pfgru(input, hidden)
-        preds = self._activation(preds)
-        preds = self._linear(preds)
         # preds have shape (num_particles, seq_len, batch, output_size)
 
         # calculate mean and variance of particles
@@ -288,3 +293,67 @@ class UncertaintyPFGRU(torch.nn.Module):
         hidden = (h0, p0)
 
         return hidden
+
+
+class UncertaintyNetwork(torch.nn.Module):
+    # consists of MLP -> RNN -> MLP
+
+    def __init__(
+            self,
+            input_size: Tuple[int, int, int],
+            hidden_size: Tuple[Sequence[int], int, Sequence[int]],
+            output_size: Tuple[int, int],
+            num_layers: int,
+            num_passes: int,
+            num_models: int,
+            dropout_prob: float,
+            device: str):
+
+        super().__init__()
+
+        self.mlp1 = UncertaintyMLP(
+            input_size=input_size[0],
+            hidden_sizes=hidden_size[0],
+            output_size=output_size[0],
+            dropout_prob=dropout_prob,
+            num_passes=num_passes,
+            num_models=num_models,
+            device=device)
+
+        self.rnn = UncertaintyGRU(
+            input_size=input_size[1],
+            hidden_size=hidden_size[1],
+            num_layers=num_layers,
+            num_passes=num_passes,
+            num_models=num_models,
+            dropout_prob=dropout_prob,
+            device=device)
+
+        self.mlp2 = UncertaintyMLP(
+            input_size=input_size[2],
+            hidden_sizes=hidden_size[2],
+            output_size=output_size[1],
+            dropout_prob=dropout_prob,
+            num_passes=num_passes,
+            num_models=num_models,
+            device=device)
+
+    def reset_parameters(self):
+        self.mlp1.reset_parameters()
+        self.rnn.reset_parameters()
+        self.mlp2.reset_parameters()
+
+    def forward(self, input, hidden=None):
+
+        means = [None]*3
+        vars = [None]*3
+        preds = [None]*3
+
+        means[0], vars[0], preds[0] = self.mlp1(input=input)
+        means[1], vars[1], preds[1], hidden = self.rnn(input=None, hidden=hidden, input_preds=preds[0])
+        means[2], vars[2], preds[2] = self.mlp2(input=None, input_preds=preds[1])
+
+        return means[-1], vars[-1], preds[-1], hidden
+
+    def init_hidden(self, batch_size=None):
+        return self.rnn.init_hidden(batch_size)

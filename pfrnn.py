@@ -179,6 +179,7 @@ class PFGRU(torch.nn.Module):
         #   (num_layers, batch_size * num_particles, 1)
 
         # repeat the batch dimension when using PF-RNN
+        # TODO separate batch and particles dimensions
         input = input.repeat(1, self._num_particles, 1)
 
         # split into hidden state and log(weights)

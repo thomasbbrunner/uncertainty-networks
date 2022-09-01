@@ -2,7 +2,6 @@
 import torch
 from torch import nn
 from typing import Tuple
-import numpy as np
 
 
 class PFGRUCell(torch.nn.Module):

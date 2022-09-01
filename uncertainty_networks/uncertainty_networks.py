@@ -1,8 +1,7 @@
 
-from pfrnn import PFGRU
+from uncertainty_networks.pfrnn import PFGRU
 
 import copy
-import functools
 import numpy as np
 import torch
 from typing import List, Tuple, Sequence

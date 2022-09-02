@@ -210,9 +210,9 @@ rnn_2 = UncertaintyNetwork(
     hidden_size=hidden_size,
     output_size=output_size,
     num_layers=num_layers,
+    dropout_prob=0,
     num_passes=1,
     num_models=10,
-    dropout_prob=0,
     device=device)
 train(X_train, y_train, rnn_2, epochs, device, shuffle, loss_type)
 mean_2, var_2, preds_2, loss_2 = test(X_test, y_test, rnn_2, device)
@@ -223,9 +223,9 @@ rnn_3 = UncertaintyNetwork(
     hidden_size=hidden_size,
     output_size=output_size,
     num_layers=num_layers,
+    dropout_prob=0.05,
     num_passes=2,
     num_models=5,
-    dropout_prob=0.05,
     device=device)
 train(X_train, y_train, rnn_3, epochs, device, shuffle, loss_type)
 mean_3, var_3, preds_3, loss_3 = test(X_test, y_test, rnn_3, device)
@@ -236,9 +236,9 @@ rnn_4 = UncertaintyNetwork(
     hidden_size=hidden_size,
     output_size=output_size,
     num_layers=num_layers,
+    dropout_prob=0.05,
     num_passes=5,
     num_models=2,
-    dropout_prob=0.05,
     device=device)
 train(X_train, y_train, rnn_4, epochs, device, shuffle, loss_type)
 mean_4, var_4, preds_4, loss_4 = test(X_test, y_test, rnn_4, device)

@@ -130,9 +130,9 @@ class UncertaintyGRU(torch.nn.Module):
             input_size: int,
             hidden_size: int,
             num_layers: int,
+            dropout_prob: float,
             num_passes: int,
             num_models: int,
-            dropout_prob: float,
             device: str):
 
         super().__init__()
@@ -303,9 +303,9 @@ class UncertaintyNetwork(torch.nn.Module):
             hidden_size: Tuple[Sequence[int], int, Sequence[int]],
             output_size: Tuple[int, int],
             num_layers: int,
+            dropout_prob: float,
             num_passes: int,
             num_models: int,
-            dropout_prob: float,
             device: str):
 
         super().__init__()
@@ -323,9 +323,9 @@ class UncertaintyNetwork(torch.nn.Module):
             input_size=input_size[1],
             hidden_size=hidden_size[1],
             num_layers=num_layers,
+            dropout_prob=dropout_prob,
             num_passes=num_passes,
             num_models=num_models,
-            dropout_prob=dropout_prob,
             device=device)
 
         self.mlp2 = UncertaintyMLP(

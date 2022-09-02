@@ -87,32 +87,36 @@ class UncertaintyMLP(torch.nn.Module):
                 if self._init_func is not None:
                     self._init_func(layer.weight)
 
-    def forward(self, input, input_preds=None):
+    def forward(self, input, shared_input=True):
+        # input shape:
+        # (batch, input_size)                           when shared_input is True
+        # (num_models, num_passes, batch, input_size)   when shared_input is False
 
-        # use input_preds instead of hidden
-        # one of them has to be None (xor)
-        assert (input_preds == None) ^ (input == None)
-        use_preds = input_preds != None
+        # If shared_input is False, then run inference on individual predictions
+        # Can be used to propagate individual predictions through many modules
+        if not shared_input:
+            assert input.shape[:2] == (self._num_models, self._num_passes)
 
         # include batch dimensions in predictions array
-        if use_preds:
-            shape = (*input_preds.shape[:-1], self._output_size)
-        else:
+        if shared_input:
             shape = (self._num_models, self._num_passes, *input.shape[:-1], self._output_size)
+        else:
+            shape = (*input.shape[:-1], self._output_size)    
         preds = torch.zeros(shape, device=self._device)
 
         # iterate over Ensemble models
         for i in range(self._num_models):
             # iterate over passes of single MC Dropout model
             for j in range(self._num_passes):
-                if use_preds:
-                    output = input_preds[i, j]
+                if shared_input:
+                    layer_input = input
                 else:
-                    output = input
-    
+                    layer_input = input[i, j]
+
                 for layer in self._models[i]:
-                    output = layer(output)
-                preds[i, j] = output
+                    layer_input = layer(layer_input)
+
+                preds[i, j] = layer_input
 
         # calculate mean and variance of models and passes
         output_mean = torch.mean(preds, dim=(0, 1))
@@ -167,21 +171,25 @@ class UncertaintyGRU(torch.nn.Module):
                 # reset weights *and* biases
                 layer.reset_parameters()
 
-    def forward(self, input, hidden=None, input_preds=None):
+    def forward(self, input, hidden=None, shared_input=True):
+        # input shape:
+        # (seq_len, batch, input_size)                          when shared_input is True
+        # (num_models, num_passes, seq_len, batch, input_size)  when shared_input is False
+        # (for hidden see init_hidden)
 
-        # use input_preds instead of hidden
-        # one of them has to be None (xor)
-        assert (input_preds == None) ^ (input == None)
-        use_preds = input_preds != None
+        # If shared_input is False, then run inference on individual predictions
+        # Can be used to propagate individual predictions through many modules
+        if not shared_input:
+            assert input.shape[:2] == (self._num_models, self._num_passes)
 
         # always have dropout enabled
         self.train()
 
         # include sequence length and batch dimensions in predictions array
-        if use_preds:
-            shape = (*input_preds.shape[:-1], self._hidden_size)
-        else:
+        if shared_input:
             shape = (self._num_models, self._num_passes, *input.shape[:-1], self._hidden_size)
+        else:
+            shape = (*input.shape[:-1], self._hidden_size)
         preds = torch.zeros(shape, device=self._device)
         hidden_out = torch.zeros_like(hidden)
 
@@ -189,9 +197,11 @@ class UncertaintyGRU(torch.nn.Module):
         for i in range(self._num_models):
             # iterate over passes of single MC Dropout model
             for j in range(self._num_passes):
-                if use_preds:
-                    input = input_preds[i, j]
-                preds[i, j], hidden_out[i, j] = self._models[i](input, hidden[i, j])
+                if shared_input:
+                    model_input = input
+                else:
+                    model_input = input[i, j]
+                preds[i, j], hidden_out[i, j] = self._models[i](model_input, hidden[i, j])
 
         # calculate mean and variance of models and passes
         output_mean = torch.mean(preds, dim=(0, 1))
@@ -349,8 +359,8 @@ class UncertaintyNetwork(torch.nn.Module):
         preds = [None]*3
 
         means[0], vars[0], preds[0] = self.mlp1(input=input)
-        means[1], vars[1], preds[1], hidden = self.rnn(input=None, hidden=hidden, input_preds=preds[0])
-        means[2], vars[2], preds[2] = self.mlp2(input=None, input_preds=preds[1])
+        means[1], vars[1], preds[1], hidden = self.rnn(preds[0], hidden=hidden, shared_input=False)
+        means[2], vars[2], preds[2] = self.mlp2(preds[1], shared_input=False)
 
         return means[-1], vars[-1], preds[-1], hidden
 

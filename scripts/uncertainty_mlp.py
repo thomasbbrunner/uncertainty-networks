@@ -1,4 +1,4 @@
-# %% Setup
+
 from uncertainty_networks import UncertaintyMLP
 import matplotlib.pyplot as plt
 import numpy as np
@@ -29,6 +29,15 @@ def train(X_train, y_train, model, epochs, device, shuffle, loss_type):
             x, y = batch
             means, vars, preds = model(x)
 
+            if loss_type == "pred":
+                # flatten dimensions of forward passes or particles
+                # we want our tensor to have shape:
+                # (num_model*num_passes, batch, output_size)
+                preds = preds.flatten(0, preds.dim() - 3)
+                # repeat desired output to match shape of predictions 
+                y_repeat = y.unsqueeze(0).repeat_interleave(preds.shape[0], 0)
+                assert y_repeat.shape == preds.shape
+
             # loss on mean
             if loss_type == "mean":
                 loss = loss_fn(means, y)
@@ -37,11 +46,7 @@ def train(X_train, y_train, model, epochs, device, shuffle, loss_type):
                 loss = loss_fn(means, y) + 0.01*vars.mean()
             # loss on each prediction
             elif loss_type == "pred":
-                preds = preds.flatten(0, 1)
-                # repeat desired output to match shape of predictions 
-                # (num_model*num_passes, ...)
-                y = y.unsqueeze(0).repeat_interleave(preds.shape[0], 0)
-                loss = loss_fn(preds, y)
+                loss = loss_fn(preds, y_repeat)
 
             loss.backward()
             optimizer.step()
@@ -67,18 +72,18 @@ def test(X_test, y_test, model, device):
             loss.to("cpu").numpy())
 
 
-# %% Training
+# Training
 # parameters
 main_shape = (128, 128, 128)
 input_size = 1
 output_size = 1
 device = "cuda"
-training_epochs = 20000
+epochs = 20000
 num_std_plot = 2
 # TODO hyperparameters
 shuffle = True
 loss_type = "pred"
-image_name_suffix = "_shuffle={} loss={}".format(shuffle, loss_type)
+image_name_suffix = "_loss={}".format(loss_type)
 
 # generate dataset
 X = np.linspace(-10, 10, 1000).reshape(-1, 1)
@@ -100,7 +105,7 @@ mlp_0 = UncertaintyMLP(
     num_passes=10,
     num_models=1,
     device=device)
-train(X_train, y_train, mlp_0, training_epochs, device, shuffle, "pred")
+train(X_train, y_train, mlp_0, epochs, device, shuffle, "pred")
 y_0, var_0, pred_0, loss_0 = test(X, y, mlp_0, device)
 
 # train MC Dropout
@@ -112,7 +117,7 @@ mlp_1 = UncertaintyMLP(
     num_passes=10,
     num_models=1,
     device=device)
-train(X_train, y_train, mlp_1, training_epochs, device, shuffle, loss_type)
+train(X_train, y_train, mlp_1, epochs, device, shuffle, loss_type)
 y_1, var_1, pred_1, loss_1 = test(X, y, mlp_1, device)
 
 # train Deep Ensamble
@@ -124,7 +129,7 @@ mlp_2 = UncertaintyMLP(
     num_passes=1,
     num_models=10,
     device=device)
-train(X_train, y_train, mlp_2, training_epochs, device, shuffle, loss_type)
+train(X_train, y_train, mlp_2, epochs, device, shuffle, loss_type)
 y_2, var_2, pred_2, loss_2 = test(X, y, mlp_2, device)
 
 # train Deep Ensamble with MC Dropout
@@ -136,7 +141,7 @@ mlp_3 = UncertaintyMLP(
     num_passes=2,
     num_models=5,
     device=device)
-train(X_train, y_train, mlp_3, training_epochs, device, shuffle, loss_type)
+train(X_train, y_train, mlp_3, epochs, device, shuffle, loss_type)
 y_3, var_3, pred_3, loss_3 = test(X, y, mlp_3, device)
 
 # train Deep Ensamble with MC Dropout
@@ -148,10 +153,11 @@ mlp_4 = UncertaintyMLP(
     num_passes=5,
     num_models=2,
     device=device)
-train(X_train, y_train, mlp_4, training_epochs, device, shuffle, loss_type)
+train(X_train, y_train, mlp_4, epochs, device, shuffle, loss_type)
 y_4, var_4, pred_4, loss_4 = test(X, y, mlp_4, device)
 
-# %% Plotting
+# Plotting
+
 # Dataset and Deterministic Baseline
 fig = plt.figure(dpi=300, figsize=(14, 7), constrained_layout=True)
 axs = fig.subplots(2)

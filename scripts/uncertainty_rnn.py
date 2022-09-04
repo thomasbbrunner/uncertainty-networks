@@ -1,4 +1,4 @@
-# %% Setup
+
 from uncertainty_networks import UncertaintyNetwork
 import matplotlib.pyplot as plt
 import numpy as np
@@ -38,7 +38,7 @@ def train(X_train, y_train, model, epochs, device, shuffle, loss_type):
             if loss_type == "pred" or loss_type == "elbo":
                 # flatten dimensions of forward passes or particles
                 # we want our tensor to have shape:
-                # (total_passes, seq_len, batch, output_size)
+                # (num_model*num_passes, seq_len, batch, output_size)
                 preds = preds.flatten(0, preds.dim() - 4)
                 # repeat desired output to match shape of predictions 
                 y_repeat = y.unsqueeze(0).repeat_interleave(preds.shape[0], 0)
@@ -77,8 +77,6 @@ def train(X_train, y_train, model, epochs, device, shuffle, loss_type):
                     l1_weight*loss_l1(means, y))
 
                 loss = loss_mean + elbo_weight * loss_preds
-            else:
-                raise RuntimeError("Unknown loss type.")
 
             loss.backward()
             optimizer.step()
@@ -105,7 +103,7 @@ def test(X_test, y_test, model, device):
             loss.to("cpu").numpy())
 
 
-# %% Training
+# Training
 # parameters
 epochs = 5000
 seq_length = 100
@@ -121,7 +119,7 @@ device = "cuda"
 # TODO hyperparameters
 shuffle = True
 loss_type = "pred"
-image_name_suffix = "_shuffle={} loss={}".format(shuffle, loss_type)
+image_name_suffix = "_loss={}".format(loss_type)
 
 # dynamics of pendulum with dampening
 G = 9.81
@@ -197,9 +195,9 @@ rnn_1 = UncertaintyNetwork(
     hidden_size=hidden_size,
     output_size=output_size,
     num_layers=num_layers,
+    dropout_prob=0.05,
     num_passes=10,
     num_models=1,
-    dropout_prob=0.05,
     device=device)
 train(X_train, y_train, rnn_1, epochs, device, shuffle, loss_type)
 mean_1, var_1, preds_1, loss_1 = test(X_test, y_test, rnn_1, device)
@@ -273,7 +271,7 @@ mean_4, var_4, preds_4, loss_4 = test(X_test, y_test, rnn_4, device)
 # elbo loss
 # sum instead of mean in aggregation
 
-# %% Plotting
+# Plotting
 
 # dataset
 fig = plt.figure(dpi=300, constrained_layout=True)

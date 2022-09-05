@@ -119,8 +119,7 @@ class UncertaintyMLP(torch.nn.Module):
                 preds[i, j] = layer_input
 
         # calculate mean and variance of models and passes
-        output_mean = torch.mean(preds, dim=(0, 1))
-        output_var = torch.var(preds, dim=(0, 1))
+        output_var, output_mean = torch.var_mean(preds, dim=(0, 1), unbiased=False)
 
         return output_mean, output_var, preds
 
@@ -204,8 +203,7 @@ class UncertaintyGRU(torch.nn.Module):
                 preds[i, j], hidden_out[i, j] = self._models[i](model_input, hidden[i, j])
 
         # calculate mean and variance of models and passes
-        output_mean = torch.mean(preds, dim=(0, 1))
-        output_var = torch.var(preds, dim=(0, 1))
+        output_var, output_mean = torch.var_mean(preds, dim=(0, 1), unbiased=False)
 
         return output_mean, output_var, preds, hidden_out
 
@@ -271,8 +269,7 @@ class UncertaintyPFGRU(torch.nn.Module):
         # Also, when we train on individual predictions the sum of outputs is scaled wrongly
         # TODO maybe with elbo loss we can use the sum?
         # output_sum = torch.sum(preds, dim=0)
-        output_mean = torch.mean(preds, dim=0)
-        output_var = torch.var(preds, dim=0)
+        output_var, output_mean = torch.var_mean(preds, dim=0, unbiased=False)
 
         return output_mean, output_var, preds, hidden
 

@@ -4,7 +4,7 @@ from uncertainty_networks.pfrnn import PFGRU
 import copy
 import numpy as np
 import torch
-from typing import List, Tuple, Sequence
+from typing import List, Literal, Tuple, Sequence
 
 
 class MonteCarloDropout(torch.nn.Dropout):
@@ -47,16 +47,19 @@ class UncertaintyMLP(torch.nn.Module):
             dropout_prob: float,
             num_passes: int,
             num_models: int,
+            initialization: Literal["rl", "sl"],
             device: str):
 
         super().__init__()
 
         self._output_size = output_size
-        self._init_func = None # TODO
         self._num_passes = num_passes
         self._num_models = num_models
+        self._initialization = initialization
         self._device = device
         activation_func = torch.nn.LeakyReLU
+
+        assert initialization in ["rl", "sl"]
 
         # create model
         model = torch.nn.ModuleList()
@@ -80,12 +83,18 @@ class UncertaintyMLP(torch.nn.Module):
 
     def reset_parameters(self):
         for layer in self.modules():
-            if isinstance(layer, torch.nn.Linear):
-                # reset weights *and* biases
+            if not isinstance(layer, torch.nn.Linear):
+                continue
+            if self._initialization == "rl":
+                # use orthogonal initialization for weights
+                torch.nn.init.orthogonal_(layer.weight, gain=np.sqrt(2))
+                # set biases to zero
+                torch.nn.init.zeros_(layer.bias)
+                # as described in: 
+                # https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/
+            else:
+                # use default layer initialization
                 layer.reset_parameters()
-                # overwrite weights if desired
-                if self._init_func is not None:
-                    self._init_func(layer.weight)
 
     def forward(self, input, shared_input=True):
         # input shape:
@@ -136,6 +145,7 @@ class UncertaintyGRU(torch.nn.Module):
             dropout_prob: float,
             num_passes: int,
             num_models: int,
+            initialization: Literal["rl", "sl"],
             device: str):
 
         super().__init__()
@@ -144,8 +154,10 @@ class UncertaintyGRU(torch.nn.Module):
         self._num_layers = num_layers
         self._num_passes = num_passes
         self._num_models = num_models
+        self._initialization = initialization
         self._device = device
-        self._init_func = None # TODO
+
+        assert initialization in ["rl", "sl"]
 
         # create model
         gru = torch.nn.GRU(
@@ -165,10 +177,18 @@ class UncertaintyGRU(torch.nn.Module):
         self.to(device)
 
     def reset_parameters(self):
-        for layer in self.modules():
-            if isinstance(layer, torch.nn.GRU):
-                # reset weights *and* biases
-                layer.reset_parameters()
+        for module in self.modules():
+            if not isinstance(module, torch.nn.GRU):
+                continue
+            if self._initialization == "rl":
+                for name, param in module.named_parameters():
+                    if "bias" in name:
+                        torch.nn.init.zeros_(param)
+                    elif "weight" in name:
+                        torch.nn.init.orthogonal_(param, 1.0)
+            else:
+                # use default layer initialization
+                module.reset_parameters()
 
     def forward(self, input, hidden=None, shared_input=True):
         # input shape:
@@ -178,8 +198,14 @@ class UncertaintyGRU(torch.nn.Module):
 
         # If shared_input is False, then run inference on individual predictions
         # Can be used to propagate individual predictions through many modules
-        if not shared_input:
+        if shared_input:
+            assert input.ndim == 3
+        else:
+            assert input.ndim == 5
             assert input.shape[:2] == (self._num_models, self._num_passes)
+
+        if hidden == None:
+            hidden = self.init_hidden(input.shape[-2])
 
         # always have dropout enabled
         self.train()
@@ -207,14 +233,17 @@ class UncertaintyGRU(torch.nn.Module):
 
         return output_mean, output_var, preds, hidden_out
 
-    def init_hidden(self, batch_size=None):
-        if batch_size == None:
+    def init_hidden(self, batch_size):
+        if False: #batch_size == None:
+            # not supported currently
             # omit batch dimension
             shape = (self._num_models, self._num_passes, self._num_layers, self._hidden_size)
         else:
             shape = (self._num_models, self._num_passes, self._num_layers, batch_size, self._hidden_size)
 
-        # TODO use random initial values for more diversity
+        # use random initial values for more diversity in uncertainty
+        # some sources claim zeros is better
+        # (https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/)
         # init_func = torch.zeros
         init_func = torch.rand
         hidden = init_func(shape, device=self._device)
@@ -313,6 +342,7 @@ class UncertaintyNetwork(torch.nn.Module):
             dropout_prob: float,
             num_passes: int,
             num_models: int,
+            initialization: Literal["rl", "sl"],
             device: str):
 
         super().__init__()
@@ -324,6 +354,7 @@ class UncertaintyNetwork(torch.nn.Module):
             dropout_prob=dropout_prob,
             num_passes=num_passes,
             num_models=num_models,
+            initialization=initialization,
             device=device)
 
         self.rnn = UncertaintyGRU(
@@ -333,6 +364,7 @@ class UncertaintyNetwork(torch.nn.Module):
             dropout_prob=dropout_prob,
             num_passes=num_passes,
             num_models=num_models,
+            initialization=initialization,
             device=device)
 
         self.mlp2 = UncertaintyMLP(
@@ -342,6 +374,7 @@ class UncertaintyNetwork(torch.nn.Module):
             dropout_prob=dropout_prob,
             num_passes=num_passes,
             num_models=num_models,
+            initialization=initialization,
             device=device)
 
     def reset_parameters(self):

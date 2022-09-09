@@ -91,7 +91,10 @@ def test(X_test, y_test, model, device):
     with torch.no_grad():
         X_test = torch.Tensor(X_test).to(device)
         y_test = torch.Tensor(y_test).to(device)
-        hidden = model.init_hidden(None)
+        # add batch dimension
+        X_test = X_test[..., None, :]
+        y_test = y_test[..., None, :]
+        hidden = model.init_hidden(1)
         model.eval()
         model.to(device)
         mean, var, preds, _ = model(X_test, hidden)
@@ -169,9 +172,10 @@ rnn_seq = UncertaintyNetwork(
     hidden_size=hidden_size,
     output_size=output_size,
     num_layers=num_layers,
+    dropout_prob=0,
     num_passes=10,
     num_models=1,
-    dropout_prob=0,
+    initialization="sl",
     device=device)
 train(X_train_seq, y_train_seq, rnn_seq, epochs, device, shuffle, "pred")
 mean_seq, var_seq, preds_seq, loss_seq = test(X_test, y_test, rnn_seq, device)
@@ -182,9 +186,10 @@ rnn_0 = UncertaintyNetwork(
     hidden_size=hidden_size,
     output_size=output_size,
     num_layers=num_layers,
+    dropout_prob=0,
     num_passes=10,
     num_models=1,
-    dropout_prob=0,
+    initialization="sl",
     device=device)
 train(X_train, y_train, rnn_0, epochs, device, shuffle, "pred")
 mean_0, var_0, preds_0, loss_0 = test(X_test, y_test, rnn_0, device)
@@ -198,6 +203,7 @@ rnn_1 = UncertaintyNetwork(
     dropout_prob=0.05,
     num_passes=10,
     num_models=1,
+    initialization="sl",
     device=device)
 train(X_train, y_train, rnn_1, epochs, device, shuffle, loss_type)
 mean_1, var_1, preds_1, loss_1 = test(X_test, y_test, rnn_1, device)
@@ -211,6 +217,7 @@ rnn_2 = UncertaintyNetwork(
     dropout_prob=0,
     num_passes=1,
     num_models=10,
+    initialization="sl",
     device=device)
 train(X_train, y_train, rnn_2, epochs, device, shuffle, loss_type)
 mean_2, var_2, preds_2, loss_2 = test(X_test, y_test, rnn_2, device)
@@ -224,6 +231,7 @@ rnn_3 = UncertaintyNetwork(
     dropout_prob=0.05,
     num_passes=2,
     num_models=5,
+    initialization="sl",
     device=device)
 train(X_train, y_train, rnn_3, epochs, device, shuffle, loss_type)
 mean_3, var_3, preds_3, loss_3 = test(X_test, y_test, rnn_3, device)
@@ -237,6 +245,7 @@ rnn_4 = UncertaintyNetwork(
     dropout_prob=0.05,
     num_passes=5,
     num_models=2,
+    initialization="sl",
     device=device)
 train(X_train, y_train, rnn_4, epochs, device, shuffle, loss_type)
 mean_4, var_4, preds_4, loss_4 = test(X_test, y_test, rnn_4, device)
@@ -343,8 +352,8 @@ for i, ax in enumerate(axs[:, 0]):
 # plot predictions
 axs[0, 1].set_title("Individual Predictions")
 for i, ax in enumerate(axs[:, 1]):
-    # flatten dimensions so that predictions have shape (total_passes, seq_len, output_size)
-    preds = pred_plot[i].reshape(-1, *pred_plot[i].shape[pred_plot[i].ndim - 2:])
+    # flatten dimensions so that predictions have shape (total_passes, ...)
+    preds = pred_plot[i].reshape(-1, *pred_plot[i].shape[2:])
     for pred in preds:
         ax.plot(T, pred.flatten(), color="tab:red", alpha=np.maximum(0.2, 1/len(preds)))
 fig.savefig("uncertainty_rnn{}.png".format(image_name_suffix))

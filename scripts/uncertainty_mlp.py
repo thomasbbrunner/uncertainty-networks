@@ -104,6 +104,7 @@ mlp_0 = UncertaintyMLP(
     # multiple passes to make comparison with other networks fairer
     num_passes=10,
     num_models=1,
+    initialization="sl",
     device=device)
 train(X_train, y_train, mlp_0, epochs, device, shuffle, "pred")
 y_0, var_0, pred_0, loss_0 = test(X, y, mlp_0, device)
@@ -116,6 +117,7 @@ mlp_1 = UncertaintyMLP(
     dropout_prob=0.1,
     num_passes=10,
     num_models=1,
+    initialization="sl",
     device=device)
 train(X_train, y_train, mlp_1, epochs, device, shuffle, loss_type)
 y_1, var_1, pred_1, loss_1 = test(X, y, mlp_1, device)
@@ -128,6 +130,7 @@ mlp_2 = UncertaintyMLP(
     dropout_prob=0,
     num_passes=1,
     num_models=10,
+    initialization="sl",
     device=device)
 train(X_train, y_train, mlp_2, epochs, device, shuffle, loss_type)
 y_2, var_2, pred_2, loss_2 = test(X, y, mlp_2, device)
@@ -140,6 +143,7 @@ mlp_3 = UncertaintyMLP(
     dropout_prob=0.1,
     num_passes=2,
     num_models=5,
+    initialization="sl",
     device=device)
 train(X_train, y_train, mlp_3, epochs, device, shuffle, loss_type)
 y_3, var_3, pred_3, loss_3 = test(X, y, mlp_3, device)
@@ -152,6 +156,7 @@ mlp_4 = UncertaintyMLP(
     dropout_prob=0.1,
     num_passes=5,
     num_models=2,
+    initialization="sl",
     device=device)
 train(X_train, y_train, mlp_4, epochs, device, shuffle, loss_type)
 y_4, var_4, pred_4, loss_4 = test(X, y, mlp_4, device)

@@ -48,6 +48,7 @@ class UncertaintyMLP(torch.nn.Module):
             num_passes: int,
             num_models: int,
             initialization: Literal["rl", "sl"],
+            activation: torch.nn.Module,
             device: str):
 
         super().__init__()
@@ -57,7 +58,6 @@ class UncertaintyMLP(torch.nn.Module):
         self._num_models = num_models
         self._initialization = initialization
         self._device = device
-        activation_func = torch.nn.LeakyReLU
 
         assert initialization in ["rl", "sl"]
 
@@ -65,7 +65,7 @@ class UncertaintyMLP(torch.nn.Module):
         model = torch.nn.ModuleList()
         for hidden_size in hidden_sizes:
             model.append(torch.nn.Linear(input_size, hidden_size))
-            model.append(activation_func())
+            model.append(activation())
             if dropout_prob > 0:
                 model.append(MonteCarloDropout(dropout_prob))
             input_size = hidden_size
@@ -98,8 +98,9 @@ class UncertaintyMLP(torch.nn.Module):
 
     def forward(self, input, shared_input=True):
         # input shape:
-        # (batch, input_size)                           when shared_input is True
-        # (num_models, num_passes, batch, input_size)   when shared_input is False
+        #   (batch, input_size)                           when shared_input is True
+        #   (num_models, num_passes, batch, input_size)   when shared_input is False
+        # batch dimension can be composed of several dimensions, e.g. (sequence, batch) for RNNs.
 
         # If shared_input is False, then run inference on individual predictions
         # Can be used to propagate individual predictions through many modules
@@ -110,7 +111,7 @@ class UncertaintyMLP(torch.nn.Module):
         if shared_input:
             shape = (self._num_models, self._num_passes, *input.shape[:-1], self._output_size)
         else:
-            shape = (*input.shape[:-1], self._output_size)    
+            shape = (*input.shape[:-1], self._output_size)
         preds = torch.zeros(shape, device=self._device)
 
         # iterate over Ensemble models
@@ -182,10 +183,10 @@ class UncertaintyGRU(torch.nn.Module):
                 continue
             if self._initialization == "rl":
                 for name, param in module.named_parameters():
-                    if "bias" in name:
-                        torch.nn.init.zeros_(param)
-                    elif "weight" in name:
+                    if "weight" in name:
                         torch.nn.init.orthogonal_(param, 1.0)
+                    elif "bias" in name:
+                        torch.nn.init.zeros_(param)
             else:
                 # use default layer initialization
                 module.reset_parameters()
@@ -384,15 +385,11 @@ class UncertaintyNetwork(torch.nn.Module):
 
     def forward(self, input, hidden=None):
 
-        means = [None]*3
-        vars = [None]*3
-        preds = [None]*3
+        _, _, preds = self.mlp1(input=input)
+        _, _, preds, hidden = self.rnn(preds, hidden=hidden, shared_input=False)
+        means, vars, preds = self.mlp2(preds, shared_input=False)
 
-        means[0], vars[0], preds[0] = self.mlp1(input=input)
-        means[1], vars[1], preds[1], hidden = self.rnn(preds[0], hidden=hidden, shared_input=False)
-        means[2], vars[2], preds[2] = self.mlp2(preds[1], shared_input=False)
-
-        return means[-1], vars[-1], preds[-1], hidden
+        return means, vars, preds, hidden
 
     def init_hidden(self, batch_size=None):
         return self.rnn.init_hidden(batch_size)

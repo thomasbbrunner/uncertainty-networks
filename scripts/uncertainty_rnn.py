@@ -33,7 +33,7 @@ def train(X_train, y_train, model, epochs, device, shuffle, loss_type):
             x = np.swapaxes(x, 0, 1)
             y = np.swapaxes(y, 0, 1)
             hidden = model.init_hidden(batch_size)
-            means, vars, preds, _ = model(x, hidden)
+            means, vars, preds, _ = model(x, hidden, return_uncertainty=True)
 
             if loss_type == "pred" or loss_type == "elbo":
                 # flatten dimensions of forward passes or particles
@@ -97,7 +97,7 @@ def test(X_test, y_test, model, device):
         hidden = model.init_hidden(1)
         model.eval()
         model.to(device)
-        mean, var, preds, _ = model(X_test, hidden)
+        mean, var, preds, _ = model(X_test, hidden, return_uncertainty=True)
         loss = loss_fn(mean, y_test)
         return (
             mean.to("cpu").numpy(),

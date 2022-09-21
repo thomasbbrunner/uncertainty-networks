@@ -245,8 +245,8 @@ class UncertaintyGRU(torch.nn.Module):
         # use random initial values for more diversity in uncertainty
         # some sources claim zeros is better
         # (https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/)
-        # init_func = torch.zeros
-        init_func = torch.rand
+        init_func = torch.zeros
+        # init_func = torch.rand
         hidden = init_func(shape, device=self._device)
         return hidden
 
@@ -348,6 +348,8 @@ class UncertaintyNetwork(torch.nn.Module):
 
         super().__init__()
 
+        activation = torch.nn.LeakyReLU
+
         self.mlp1 = UncertaintyMLP(
             input_size=input_size[0],
             hidden_sizes=hidden_size[0],
@@ -356,6 +358,7 @@ class UncertaintyNetwork(torch.nn.Module):
             num_passes=num_passes,
             num_models=num_models,
             initialization=initialization,
+            activation=activation,
             device=device)
 
         self.rnn = UncertaintyGRU(
@@ -376,6 +379,7 @@ class UncertaintyNetwork(torch.nn.Module):
             num_passes=num_passes,
             num_models=num_models,
             initialization=initialization,
+            activation=activation,
             device=device)
 
     def reset_parameters(self):
@@ -383,13 +387,16 @@ class UncertaintyNetwork(torch.nn.Module):
         self.rnn.reset_parameters()
         self.mlp2.reset_parameters()
 
-    def forward(self, input, hidden=None):
+    def forward(self, input, hidden=None, return_uncertainty=False):
 
         _, _, preds = self.mlp1(input=input)
         _, _, preds, hidden = self.rnn(preds, hidden=hidden, shared_input=False)
         means, vars, preds = self.mlp2(preds, shared_input=False)
 
-        return means, vars, preds, hidden
+        if return_uncertainty:
+            return means, vars, preds, hidden
+        else:
+            return means, hidden
 
     def init_hidden(self, batch_size=None):
         return self.rnn.init_hidden(batch_size)

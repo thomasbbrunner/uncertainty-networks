@@ -74,12 +74,12 @@ def test(X_test, y_test, model, device):
 
 # Training
 # parameters
-main_shape = (128, 128, 128)
+main_shape = (64, 64, 64, 64)
 input_size = 1
 output_size = 1
 device = "cuda"
-epochs = 20000
-num_std_plot = 2
+epochs = 7000
+num_std_plot = 3
 # TODO hyperparameters
 shuffle = True
 loss_type = "pred"
@@ -105,6 +105,7 @@ mlp_0 = UncertaintyMLP(
     num_passes=10,
     num_models=1,
     initialization="sl",
+    activation=torch.nn.LeakyReLU,
     device=device)
 train(X_train, y_train, mlp_0, epochs, device, shuffle, "pred")
 y_0, var_0, pred_0, loss_0 = test(X, y, mlp_0, device)
@@ -118,6 +119,7 @@ mlp_1 = UncertaintyMLP(
     num_passes=10,
     num_models=1,
     initialization="sl",
+    activation=torch.nn.LeakyReLU,
     device=device)
 train(X_train, y_train, mlp_1, epochs, device, shuffle, loss_type)
 y_1, var_1, pred_1, loss_1 = test(X, y, mlp_1, device)
@@ -131,6 +133,7 @@ mlp_2 = UncertaintyMLP(
     num_passes=1,
     num_models=10,
     initialization="sl",
+    activation=torch.nn.LeakyReLU,
     device=device)
 train(X_train, y_train, mlp_2, epochs, device, shuffle, loss_type)
 y_2, var_2, pred_2, loss_2 = test(X, y, mlp_2, device)
@@ -144,6 +147,7 @@ mlp_3 = UncertaintyMLP(
     num_passes=2,
     num_models=5,
     initialization="sl",
+    activation=torch.nn.LeakyReLU,
     device=device)
 train(X_train, y_train, mlp_3, epochs, device, shuffle, loss_type)
 y_3, var_3, pred_3, loss_3 = test(X, y, mlp_3, device)
@@ -157,11 +161,38 @@ mlp_4 = UncertaintyMLP(
     num_passes=5,
     num_models=2,
     initialization="sl",
+    activation=torch.nn.LeakyReLU,
     device=device)
 train(X_train, y_train, mlp_4, epochs, device, shuffle, loss_type)
 y_4, var_4, pred_4, loss_4 = test(X, y, mlp_4, device)
 
 # Plotting
+
+# Thesis Figure
+y_plot = y_2.flatten()
+std_plot = num_std_plot*np.sqrt(var_2.flatten())
+pred_plot = pred_2
+fig = plt.figure(dpi=300, figsize=(7, 7), constrained_layout=True)
+axs = fig.subplots(3)
+axs[0].set_title("Dataset")
+for i in train_indices:
+    axs[0].plot(X[i], y[i], color="tab:blue")
+for i in test_indices:
+    axs[0].plot(X[i], y[i], color="tab:orange")
+
+for ax in axs.flatten()[1:]:
+    for i in train_indices:
+        ax.plot(X[i], y[i], color="tab:blue", linestyle="--")
+    for i in test_indices:
+        ax.plot(X[i], y[i], color="tab:orange", linestyle="--")
+axs[1].set_title(r"Final Predictions ({}$\sigma$)".format(num_std_plot))
+axs[1].plot(X, y_plot, color="tab:red")
+axs[1].fill_between(X.flatten(), y_plot - std_plot, y_plot + std_plot, alpha=0.2, color="tab:grey")
+axs[2].set_title("Individual Predictions")
+preds = pred_plot.reshape(-1, *pred_plot.shape[2:])
+for pred in preds:
+    axs[2].plot(X, pred, color="tab:red", alpha=np.maximum(0.2, 1/len(preds)))
+fig.savefig("uncertainty_mlp.png")
 
 # Dataset and Deterministic Baseline
 fig = plt.figure(dpi=300, figsize=(14, 7), constrained_layout=True)

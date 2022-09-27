@@ -4,7 +4,7 @@ from uncertainty_networks.pfrnn import PFGRU
 import copy
 import numpy as np
 import torch
-from typing import List, Literal, Tuple, Sequence
+from typing import Literal, Tuple, Sequence
 
 
 class MonteCarloDropout(torch.nn.Dropout):
@@ -42,7 +42,7 @@ class UncertaintyMLP(torch.nn.Module):
     def __init__(
             self,
             input_size: int,
-            hidden_sizes: List[int],
+            hidden_sizes: Sequence[int],
             output_size: int,
             dropout_prob: float,
             num_passes: int,
@@ -389,9 +389,23 @@ class UncertaintyNetwork(torch.nn.Module):
 
     def forward(self, input, hidden=None, return_uncertainty=False):
 
+        # include sequence dimension if not present
+        added_seq_dim = False
+        if input.ndim == 2:
+            input = input[None, ...]
+            added_seq_dim = True
+        assert input.ndim == 3
+        assert input.shape[-2] == hidden.shape[-2]
+
         _, _, preds = self.mlp1(input=input)
         _, _, preds, hidden = self.rnn(preds, hidden=hidden, shared_input=False)
         means, vars, preds = self.mlp2(preds, shared_input=False)
+
+        # remove sequence length dimension only if it was not present
+        if added_seq_dim:
+            means = torch.squeeze(means, dim=0)
+            vars = torch.squeeze(vars, dim=0)
+            preds = torch.squeeze(preds, dim=-3)
 
         if return_uncertainty:
             return means, vars, preds, hidden

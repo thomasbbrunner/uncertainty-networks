@@ -78,12 +78,13 @@ main_shape = (64, 64, 64, 64)
 input_size = 1
 output_size = 1
 device = "cuda"
-epochs = 7000
+epochs = 10000
 num_std_plot = 3
 # TODO hyperparameters
 shuffle = True
 loss_type = "pred"
-image_name_suffix = "_loss={}".format(loss_type)
+use_jit = True
+image_name_suffix = "_loss={}_jit={}".format(loss_type, use_jit)
 
 # generate dataset
 X = np.linspace(-10, 10, 1000).reshape(-1, 1)
@@ -107,6 +108,7 @@ mlp_0 = UncertaintyMLP(
     initialization="sl",
     activation=torch.nn.LeakyReLU,
     device=device)
+mlp_0 = torch.jit.script(mlp_0) if use_jit else mlp_0
 train(X_train, y_train, mlp_0, epochs, device, shuffle, "pred")
 y_0, var_0, pred_0, loss_0 = test(X, y, mlp_0, device)
 
@@ -121,6 +123,7 @@ mlp_1 = UncertaintyMLP(
     initialization="sl",
     activation=torch.nn.LeakyReLU,
     device=device)
+mlp_1 = torch.jit.script(mlp_1) if use_jit else mlp_1
 train(X_train, y_train, mlp_1, epochs, device, shuffle, loss_type)
 y_1, var_1, pred_1, loss_1 = test(X, y, mlp_1, device)
 
@@ -135,6 +138,7 @@ mlp_2 = UncertaintyMLP(
     initialization="sl",
     activation=torch.nn.LeakyReLU,
     device=device)
+mlp_2 = torch.jit.script(mlp_2) if use_jit else mlp_2
 train(X_train, y_train, mlp_2, epochs, device, shuffle, loss_type)
 y_2, var_2, pred_2, loss_2 = test(X, y, mlp_2, device)
 
@@ -149,6 +153,7 @@ mlp_3 = UncertaintyMLP(
     initialization="sl",
     activation=torch.nn.LeakyReLU,
     device=device)
+mlp_3 = torch.jit.script(mlp_3) if use_jit else mlp_3
 train(X_train, y_train, mlp_3, epochs, device, shuffle, loss_type)
 y_3, var_3, pred_3, loss_3 = test(X, y, mlp_3, device)
 
@@ -163,6 +168,7 @@ mlp_4 = UncertaintyMLP(
     initialization="sl",
     activation=torch.nn.LeakyReLU,
     device=device)
+mlp_4 = torch.jit.script(mlp_4) if use_jit else mlp_4
 train(X_train, y_train, mlp_4, epochs, device, shuffle, loss_type)
 y_4, var_4, pred_4, loss_4 = test(X, y, mlp_4, device)
 

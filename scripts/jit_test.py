@@ -3,6 +3,7 @@ from uncertainty_networks import UncertaintyNetwork
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import time
 
 # reproducibility
 torch.manual_seed(0)
@@ -119,11 +120,8 @@ output_size = [3, 1]
 num_layers = 2
 num_std_plot = 2
 device = "cuda"
-# TODO hyperparameters
 shuffle = True
 loss_type = "pred"
-use_jit = True
-image_name_suffix = "_loss={}_jit={}".format(loss_type, use_jit)
 
 # dynamics of pendulum with dampening
 G = 9.81
@@ -167,83 +165,12 @@ y_train_seq = np.repeat(np.reshape(vel, (-1, 1, 1)), 10, axis=0)
 X_test = ang[..., None]
 y_test = vel[..., None]
 
-# train deterministic baseline with sequence length of 1
-rnn_seq = UncertaintyNetwork(
-    input_size=input_size,
-    hidden_size=hidden_size,
-    output_size=output_size,
-    num_layers=num_layers,
-    dropout_prob=0,
-    num_passes=10,
-    num_models=1,
-    initialization="sl",
-    device=device)
-rnn_seq = torch.jit.script(rnn_seq) if use_jit else rnn_seq
-train(X_train_seq, y_train_seq, rnn_seq, epochs, device, shuffle, "pred")
-mean_seq, var_seq, preds_seq, loss_seq = test(X_test, y_test, rnn_seq, device)
 
-# train deterministic baseline
-rnn_0 = UncertaintyNetwork(
-    input_size=input_size,
-    hidden_size=hidden_size,
-    output_size=output_size,
-    num_layers=num_layers,
-    dropout_prob=0,
-    num_passes=10,
-    num_models=1,
-    initialization="sl",
-    device=device)
-rnn_0 = torch.jit.script(rnn_0) if use_jit else rnn_0
-train(X_train, y_train, rnn_0, epochs, device, shuffle, "pred")
-mean_0, var_0, preds_0, loss_0 = test(X_test, y_test, rnn_0, device)
-
-# train dropout
-rnn_1 = UncertaintyNetwork(
-    input_size=input_size,
-    hidden_size=hidden_size,
-    output_size=output_size,
-    num_layers=num_layers,
-    dropout_prob=0.05,
-    num_passes=10,
-    num_models=1,
-    initialization="sl",
-    device=device)
-rnn_1 = torch.jit.script(rnn_1) if use_jit else rnn_1
-train(X_train, y_train, rnn_1, epochs, device, shuffle, loss_type)
-mean_1, var_1, preds_1, loss_1 = test(X_test, y_test, rnn_1, device)
-
-# train ensemble
-rnn_2 = UncertaintyNetwork(
-    input_size=input_size,
-    hidden_size=hidden_size,
-    output_size=output_size,
-    num_layers=num_layers,
-    dropout_prob=0,
-    num_passes=1,
-    num_models=10,
-    initialization="sl",
-    device=device)
-rnn_2 = torch.jit.script(rnn_2) if use_jit else rnn_2
-train(X_train, y_train, rnn_2, epochs, device, shuffle, loss_type)
-mean_2, var_2, preds_2, loss_2 = test(X_test, y_test, rnn_2, device)
-
-# train ensemble with dropout
-rnn_3 = UncertaintyNetwork(
-    input_size=input_size,
-    hidden_size=hidden_size,
-    output_size=output_size,
-    num_layers=num_layers,
-    dropout_prob=0.05,
-    num_passes=2,
-    num_models=5,
-    initialization="sl",
-    device=device)
-rnn_3 = torch.jit.script(rnn_3) if use_jit else rnn_3
-train(X_train, y_train, rnn_3, epochs, device, shuffle, loss_type)
-mean_3, var_3, preds_3, loss_3 = test(X_test, y_test, rnn_3, device)
-
-# train ensemble with dropout
-rnn_4 = UncertaintyNetwork(
+# Train Python model
+torch.manual_seed(0)
+np.random.seed(0)
+start_time = time.time()
+model = UncertaintyNetwork(
     input_size=input_size,
     hidden_size=hidden_size,
     output_size=output_size,
@@ -253,91 +180,47 @@ rnn_4 = UncertaintyNetwork(
     num_models=2,
     initialization="sl",
     device=device)
-rnn_4 = torch.jit.script(rnn_4) if use_jit else rnn_4
-train(X_train, y_train, rnn_4, epochs, device, shuffle, loss_type)
-mean_4, var_4, preds_4, loss_4 = test(X_test, y_test, rnn_4, device)
+init_time = time.time() - start_time
 
-# train PFGRU (can optionally be used with torch.jit.script)
-# rnn_3 = UncertaintyNetwork(
-#     input_size=input_size,
-#     hidden_size=hidden_size,
-#     output_size=output_size,
-#     num_layers=num_layers,
-#     num_particles=5,
-#     dropout_prob=0.05,
-#     resamp_alpha=0.5, # paper uses 0.5
-#     device=device)
-# train(X_train, y_train, rnn_3, epochs, device, shuffle, loss_type)
-# mean_3, var_3, preds_3, loss_3 = test(X_test, y_test, rnn_3, device)
+start_time = time.time()
+train(X_train, y_train, model, epochs, device, shuffle, loss_type)
+mean_1, var_1, preds_1, loss_1 = test(X_test, y_test, model, device)
+train_time = time.time() - start_time
 
-# TODO make PFRNN more diverse
 
-# TODO training instability
-# CURRENT EXPERIMENT:
-# NEXT EXPERIMENT:
-# reset_parameters
+# Train Torchscript model
+torch.manual_seed(0)
+np.random.seed(0)
+start_time = time.time()
+model_jit = UncertaintyNetwork(
+    input_size=input_size,
+    hidden_size=hidden_size,
+    output_size=output_size,
+    num_layers=num_layers,
+    dropout_prob=0.05,
+    num_passes=5,
+    num_models=2,
+    initialization="sl",
+    device=device)
+model_jit = torch.jit.script(model_jit)
+init_time_jit = time.time() - start_time
 
-# TODO performance improvements
-# CURRENT EXPERIMENT:
-# NEXT EXPERIMENT: 
-# reset parameters
-# activate dropout
-# resampling alpha parameter
-# random hidden states --> helped with diversity!
-# elbo loss
-# sum instead of mean in aggregation
+start_time = time.time()
+train(X_train, y_train, model_jit, epochs, device, shuffle, loss_type)
+mean_2, var_2, preds_2, loss_2 = test(X_test, y_test, model_jit, device)
+train_time_jit = time.time() - start_time
+
+
+# Summary
+print("Python model:\n\tinitialization time: {}s\n\ttraining time: {} s\n\tfinal loss: {}".format(init_time, train_time, loss_1))
+print("TorchScript model:\n\tinitialization time: {}s\n\ttraining time: {} s\n\tfinal loss: {}".format(init_time_jit, train_time_jit, loss_2))
 
 # Plotting
-
-# dataset
-fig = plt.figure(dpi=300, constrained_layout=True)
-gs = fig.add_gridspec(2, 2)
-axs = [fig.add_subplot(gs[:, 0]), fig.add_subplot(gs[0, 1]),fig.add_subplot(gs[1, 1])]
-axs[0].set_title("Ground Truth Data", loc="left")
-axs[0].grid()
-axs[0].set_xlabel("Angle (Input)")
-axs[0].set_ylabel("Velocity (Output)")
-for i in train_indices:
-    axs[0].plot(ang[i], vel[i], color="tab:blue")
-for i in test_indices:
-    axs[0].plot(ang[i], vel[i], color="tab:orange")
-axs[1].grid()
-axs[1].set_ylabel("Angle (Input)")
-for i in train_indices:
-    axs[1].plot(T[i], ang[i], color="tab:blue")
-for i in test_indices:
-    axs[1].plot(T[i], ang[i], color="tab:orange")
-axs[2].grid()
-axs[2].set_xlabel("Time (Sequence Length)")
-axs[2].set_ylabel("Velocity (Output)")
-for i in train_indices:
-    axs[2].plot(T[i], vel[i], color="tab:blue")
-for i in test_indices:
-    axs[2].plot(T[i], vel[i], color="tab:orange")
-fig.savefig("uncertainty_rnn_dataset.png")
-
-# baselines
-fig = plt.figure(dpi=300, constrained_layout=True)
-axs = fig.subplots(2)
-axs[0].set_title("Deterministic Baseline\nTest Loss = {:.4}".format(loss_0), loc="left")
-# plot function
-for ax in axs.flatten():
-    ax.grid()
-    for i in train_indices:
-        ax.plot(T[i], vel[i], color="tab:blue", linestyle="--")
-    for i in test_indices:
-        ax.plot(T[i], vel[i], color="tab:orange", linestyle="--")
-axs[0].plot(T, mean_0.flatten(), color="tab:red")
-axs[1].set_title("Deterministic Baseline with seq_len = 1\nTest Loss = {:.4}".format(loss_seq), loc="left")
-axs[1].plot(T, mean_seq.flatten(), color="tab:red")
-fig.savefig("uncertainty_rnn_baseline.png")
-
-# models
 fig = plt.figure(dpi=300, figsize=(28, 14), constrained_layout=True)
-axs = np.array(fig.subplots(4, 2))
-mean_plot = np.array([mean_1.flatten(), mean_2.flatten(), mean_3.flatten(), mean_4.flatten()])
-std_plot = num_std_plot*np.sqrt(np.array([var_1.flatten(), var_2.flatten(), var_3.flatten(), var_4.flatten()]))
-pred_plot = [preds_1, preds_2, preds_3, preds_4]
+axs = np.array(fig.subplots(2, 2))
+mean_plot = np.array([mean_1.flatten(), mean_2.flatten()])
+std_plot = num_std_plot*np.sqrt(np.array([var_1.flatten(), var_2.flatten()]))
+pred_plot = [preds_1, preds_2]
 # plot function
 for ax in axs.flatten():
     ax.grid()
@@ -346,11 +229,8 @@ for ax in axs.flatten():
     for i in test_indices:
         ax.plot(T[i], vel[i], color="tab:orange", linestyle="--")
 # titles
-axs[0, 0].set_title("MC Dropout (10 passes)\nTest Loss = {:.4}".format(loss_1), loc="left")
-axs[1, 0].set_title("Ensemble (10 models)\nTest Loss = {:.4}".format(loss_2), loc="left")
-axs[2, 0].set_title("Ensemble (5 models) MC Dropout (2 passes)" "\nTest Loss = {:.4}".format(loss_3), loc="left")
-axs[3, 0].set_title("Ensemble (2 models) MC Dropout (5 passes)" "\nTest Loss = {:.4}".format(loss_4), loc="left")
-# axs[2, 0].set_title("Patricle Filter GRU (5 particles)" "\nTest Loss = {:.4}".format(loss_3), loc="left")
+axs[0, 0].set_title("Python Model\nTest Loss: {:.4}\nTraining Time: {:.4}".format(loss_1, train_time), loc="left")
+axs[1, 0].set_title("TorchScript Model\nTest Loss: {:.4}\nTraining Time: {:.4}".format(loss_2, train_time_jit), loc="left")
 # plot mean and std
 axs[0, 0].set_title(r"Final Predictions ({}$\sigma$)".format(num_std_plot))
 for i, ax in enumerate(axs[:, 0]):
@@ -363,4 +243,4 @@ for i, ax in enumerate(axs[:, 1]):
     preds = pred_plot[i].reshape(-1, *pred_plot[i].shape[2:])
     for pred in preds:
         ax.plot(T, pred.flatten(), color="tab:red", alpha=np.maximum(0.2, 1/len(preds)))
-fig.savefig("uncertainty_rnn{}.png".format(image_name_suffix))
+fig.savefig("jit_test.png")

@@ -4,14 +4,17 @@ from uncertainty_networks.pfrnn import PFGRU
 import copy
 import numpy as np
 import torch
+from torch import Tensor
 from typing import Literal, Tuple, Sequence
 
 
-class MonteCarloDropout(torch.nn.Dropout):
-    def forward(self, x):
+class MonteCarloDropout(torch.nn.modules.dropout._DropoutNd):
+    def __init__(self, p: float):
+        super().__init__(p, False)
+
+    def forward(self, input: Tensor) -> Tensor:
         # always have dropout enabled
-        self.train()
-        return super().forward(x)
+        return torch.nn.functional.dropout(input, self.p, True, False)
 
 
 class UncertaintyMLP(torch.nn.Module):
@@ -81,7 +84,9 @@ class UncertaintyMLP(torch.nn.Module):
 
         self.to(device)
 
-    def reset_parameters(self):
+    @torch.jit.ignore
+    @torch.jit.export
+    def reset_parameters(self) -> None:
         for layer in self.modules():
             if not isinstance(layer, torch.nn.Linear):
                 continue
@@ -96,7 +101,8 @@ class UncertaintyMLP(torch.nn.Module):
                 # use default layer initialization
                 layer.reset_parameters()
 
-    def forward(self, input, shared_input=True):
+    @torch.jit.export
+    def forward(self, input: Tensor, shared_input: bool=True) -> Tuple[Tensor, Tensor, Tensor]:
         # input shape:
         #   (batch, input_size)                           when shared_input is True
         #   (num_models, num_passes, batch, input_size)   when shared_input is False
@@ -107,15 +113,15 @@ class UncertaintyMLP(torch.nn.Module):
         if not shared_input:
             assert input.shape[:2] == (self._num_models, self._num_passes)
 
-        # include batch dimensions in predictions array
+        # include batch dimensions in shape of predictions array
         if shared_input:
-            shape = (self._num_models, self._num_passes, *input.shape[:-1], self._output_size)
+            shape = (self._num_models, self._num_passes) + input.shape[:-1] + (self._output_size,)
         else:
-            shape = (*input.shape[:-1], self._output_size)
+            shape = input.shape[:-1] + (self._output_size,)
         preds = torch.zeros(shape, device=self._device)
 
         # iterate over Ensemble models
-        for i in range(self._num_models):
+        for i, model in enumerate(self._models):
             # iterate over passes of single MC Dropout model
             for j in range(self._num_passes):
                 if shared_input:
@@ -123,7 +129,7 @@ class UncertaintyMLP(torch.nn.Module):
                 else:
                     layer_input = input[i, j]
 
-                for layer in self._models[i]:
+                for layer in model:
                     layer_input = layer(layer_input)
 
                 preds[i, j] = layer_input
@@ -177,7 +183,9 @@ class UncertaintyGRU(torch.nn.Module):
 
         self.to(device)
 
-    def reset_parameters(self):
+    @torch.jit.ignore
+    @torch.jit.export
+    def reset_parameters(self) -> None:
         for module in self.modules():
             if not isinstance(module, torch.nn.GRU):
                 continue
@@ -191,7 +199,8 @@ class UncertaintyGRU(torch.nn.Module):
                 # use default layer initialization
                 module.reset_parameters()
 
-    def forward(self, input, hidden=None, shared_input=True):
+    @torch.jit.export
+    def forward(self, input: Tensor, hidden: Tensor=None, shared_input: bool=True) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         # input shape:
         # (seq_len, batch, input_size)                          when shared_input is True
         # (num_models, num_passes, seq_len, batch, input_size)  when shared_input is False
@@ -205,36 +214,37 @@ class UncertaintyGRU(torch.nn.Module):
             assert input.ndim == 5
             assert input.shape[:2] == (self._num_models, self._num_passes)
 
-        if hidden == None:
+        if hidden is None:
             hidden = self.init_hidden(input.shape[-2])
 
-        # always have dropout enabled
-        self.train()
-
-        # include sequence length and batch dimensions in predictions array
+        # include sequence length and batch dimensions in shape of predictions array
         if shared_input:
-            shape = (self._num_models, self._num_passes, *input.shape[:-1], self._hidden_size)
+            shape = (self._num_models, self._num_passes) + input.shape[:-1] + (self._hidden_size,)
         else:
-            shape = (*input.shape[:-1], self._hidden_size)
+            shape = input.shape[:-1] + (self._hidden_size,)
         preds = torch.zeros(shape, device=self._device)
         hidden_out = torch.zeros_like(hidden)
 
         # iterate over Ensemble models
-        for i in range(self._num_models):
+        for i, model in enumerate(self._models):
             # iterate over passes of single MC Dropout model
             for j in range(self._num_passes):
                 if shared_input:
                     model_input = input
                 else:
                     model_input = input[i, j]
-                preds[i, j], hidden_out[i, j] = self._models[i](model_input, hidden[i, j])
+                
+                # always have dropout enabled
+                model.training = True
+                preds[i, j], hidden_out[i, j] = model(model_input, hidden[i, j])
 
         # calculate mean and variance of models and passes
         output_var, output_mean = torch.var_mean(preds, dim=(0, 1), unbiased=False)
 
         return output_mean, output_var, preds, hidden_out
 
-    def init_hidden(self, batch_size):
+    @torch.jit.export
+    def init_hidden(self, batch_size: int) -> Tensor:
         if False: #batch_size == None:
             # not supported currently
             # omit batch dimension
@@ -303,7 +313,6 @@ class UncertaintyPFGRU(torch.nn.Module):
 
         return output_mean, output_var, preds, hidden
 
-    @torch.jit.ignore
     def reset_parameters(self):
         for layer in self.modules():
             if isinstance(layer, torch.nn.Linear):
@@ -313,7 +322,6 @@ class UncertaintyPFGRU(torch.nn.Module):
                 # reset weights *and* biases
                 layer.reset_parameters()
 
-    @torch.jit.ignore
     def init_hidden(self, batch_size=None):
         # use random initial values for more diversity
         # func = torch.zeros
@@ -382,12 +390,14 @@ class UncertaintyNetwork(torch.nn.Module):
             activation=activation,
             device=device)
 
-    def reset_parameters(self):
+    @torch.jit.export
+    def reset_parameters(self) -> None:
         self.mlp1.reset_parameters()
         self.rnn.reset_parameters()
         self.mlp2.reset_parameters()
 
-    def forward(self, input, hidden=None, return_uncertainty=False):
+    @torch.jit.export
+    def forward(self, input: Tensor, hidden: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
 
         # include sequence dimension if not present
         added_seq_dim = False
@@ -407,10 +417,8 @@ class UncertaintyNetwork(torch.nn.Module):
             vars = torch.squeeze(vars, dim=0)
             preds = torch.squeeze(preds, dim=-3)
 
-        if return_uncertainty:
-            return means, vars, preds, hidden
-        else:
-            return means, hidden
+        return means, vars, preds, hidden
 
-    def init_hidden(self, batch_size=None):
+    @torch.jit.export
+    def init_hidden(self, batch_size: int) -> Tensor:
         return self.rnn.init_hidden(batch_size)

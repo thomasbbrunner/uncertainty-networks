@@ -102,7 +102,7 @@ class UncertaintyMLP(torch.nn.Module):
                 layer.reset_parameters()
 
     @torch.jit.export
-    def forward(self, input: Tensor, shared_input: bool=True) -> Tuple[Tensor, Tensor, Tensor]:
+    def forward(self, input: Tensor, shared_input: bool=True) -> Tensor:
         # input shape:
         #   (batch, input_size)                           when shared_input is True
         #   (num_models, num_passes, batch, input_size)   when shared_input is False
@@ -134,10 +134,7 @@ class UncertaintyMLP(torch.nn.Module):
 
                 preds[i, j] = layer_input
 
-        # calculate mean and variance of models and passes
-        output_var, output_mean = torch.var_mean(preds, dim=(0, 1), unbiased=False)
-
-        return output_mean, output_var, preds
+        return preds
 
 
 class UncertaintyGRU(torch.nn.Module):
@@ -200,7 +197,7 @@ class UncertaintyGRU(torch.nn.Module):
                 module.reset_parameters()
 
     @torch.jit.export
-    def forward(self, input: Tensor, hidden: Tensor=None, shared_input: bool=True) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    def forward(self, input: Tensor, hidden: Tensor=None, shared_input: bool=True) -> Tuple[Tensor, Tensor]:
         # input shape:
         # (seq_len, batch, input_size)                          when shared_input is True
         # (num_models, num_passes, seq_len, batch, input_size)  when shared_input is False
@@ -238,10 +235,7 @@ class UncertaintyGRU(torch.nn.Module):
                 model.training = True
                 preds[i, j], hidden_out[i, j] = model(model_input, hidden[i, j])
 
-        # calculate mean and variance of models and passes
-        output_var, output_mean = torch.var_mean(preds, dim=(0, 1), unbiased=False)
-
-        return output_mean, output_var, preds, hidden_out
+        return preds, hidden_out
 
     @torch.jit.export
     def init_hidden(self, batch_size: int) -> Tensor:
@@ -407,17 +401,19 @@ class UncertaintyNetwork(torch.nn.Module):
         assert input.ndim == 3
         assert input.shape[-2] == hidden.shape[-2]
 
-        _, _, preds = self.mlp1(input=input)
-        _, _, preds, hidden = self.rnn(preds, hidden=hidden, shared_input=False)
-        means, vars, preds = self.mlp2(preds, shared_input=False)
+        preds = self.mlp1(input=input)
+        preds, hidden = self.rnn(preds, hidden=hidden, shared_input=False)
+        preds = self.mlp2(preds, shared_input=False)
+
+        var, mean = torch.var_mean(preds, dim=(0, 1), unbiased=False)
 
         # remove sequence length dimension only if it was not present
         if added_seq_dim:
-            means = torch.squeeze(means, dim=0)
-            vars = torch.squeeze(vars, dim=0)
+            mean = torch.squeeze(mean, dim=0)
+            var = torch.squeeze(var, dim=0)
             preds = torch.squeeze(preds, dim=-3)
 
-        return means, vars, preds, hidden
+        return mean, var, preds, hidden
 
     @torch.jit.export
     def init_hidden(self, batch_size: int) -> Tensor:

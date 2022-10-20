@@ -23,8 +23,7 @@ def train(X_train, y_train, model, epochs, batch_size, device, loss_type):
         epoch_loss = 0
         for batch_indices in sampler:
             optimizer.zero_grad()
-            X_batch = X_train[batch_indices]
-            y_batch = y_train[batch_indices]
+            X_batch, y_batch = dataset[batch_indices]
 
             output = model(X_batch)
             preds, logvar = torch.split(output, [1, 1], dim=-1)
@@ -120,47 +119,38 @@ model_stdx = num_std_plot*np.sqrt(model_var)
 data_stdx = num_std_plot*np.sqrt(data_var)
 
 # Plotting
-# dataset
-fig = plt.figure(dpi=300, figsize=(7, 4), constrained_layout=True)
-axs = fig.subplots(2, sharex=True, sharey=True)
+fig = plt.figure(dpi=300, figsize=(7, 10), constrained_layout=True)
+axs = fig.subplots(6, sharex=True, sharey=True)
+# plot gt
+for i, ax in enumerate(axs):
+    ax.grid()
+    if i == 1:
+        continue
+    linestyle = "--" if i != 0 else None
+    ax.plot(np.where(np.logical_or(noisy_mask, missing_mask), np.nan, X.flatten()), np.where(np.logical_or(noisy_mask, missing_mask), np.nan, y.flatten()), color="tab:blue", linestyle=linestyle)
+    ax.plot(np.where(missing_mask, X.flatten(), np.nan), np.where(missing_mask, y.flatten(), np.nan), color="tab:orange", linestyle=linestyle)
+    ax.plot(np.where(noisy_mask, X.flatten(), np.nan), np.where(noisy_mask, y.flatten(), np.nan), color="tab:green", linestyle=linestyle)
+# ground truth
 axs[0].set_title("Ground Truth Data", loc="left")
-axs[0].grid()
-axs[0].plot(np.where(np.logical_or(noisy_mask, missing_mask), None, X.flatten()), np.where(np.logical_or(noisy_mask, missing_mask), None, y.flatten()), color="tab:blue")
-axs[0].plot(np.where(missing_mask, X.flatten(), None), np.where(missing_mask, y.flatten(), None), color="tab:orange")
-axs[0].plot(np.where(noisy_mask, X.flatten(), None), np.where(noisy_mask, y.flatten(), None), color="tab:red")
+# samples
 size = 1
 axs[1].set_title("Training Data", loc="left")
 axs[1].scatter(X_train, y_train, color="tab:blue", marker=".", s=size)
-axs[1].grid()
-fig.savefig("mlp_dataset.png")
-
-# predictions
-fig = plt.figure(dpi=300, figsize=(7, 8), constrained_layout=True)
-axs = fig.subplots(4, sharex=True, sharey=True)
-# plot gt
-for ax in axs:
-    ax.plot(np.where(np.logical_or(noisy_mask, missing_mask), None, X.flatten()), np.where(np.logical_or(noisy_mask, missing_mask), None, y.flatten()), color="tab:blue", linestyle="--")
-    ax.plot(np.where(missing_mask, X.flatten(), None), np.where(missing_mask, y.flatten(), None), color="tab:orange", linestyle="--")
-    ax.plot(np.where(noisy_mask, X.flatten(), None), np.where(noisy_mask, y.flatten(), None), color="tab:red", linestyle="--")
 # mean and total var
-axs[0].plot(X, mean, color="tab:red")
-axs[0].fill_between(X.flatten(), (mean - stdx).flatten(), (mean + stdx).flatten(), alpha=0.2, color="tab:grey")
-axs[0].grid()
-axs[0].set_title("Mean and Total Uncertainty\nTest Loss = {:.4}".format(loss), loc="left")
-# mean and model var
-axs[1].plot(X, mean, color="tab:red")
-axs[1].fill_between(X.flatten(), (mean - model_stdx).flatten(), (mean + model_stdx).flatten(), alpha=0.2, color="tab:grey")
-axs[1].grid()
-axs[1].set_title("Mean and Model Uncertainty", loc="left")
-# mean and data var
 axs[2].plot(X, mean, color="tab:red")
-axs[2].fill_between(X.flatten(), (mean - data_stdx).flatten(), (mean + data_stdx).flatten(), alpha=0.2, color="tab:grey")
-axs[2].grid()
-axs[2].set_title("Mean and Data Uncertainty", loc="left")
+axs[2].fill_between(X.flatten(), (mean - stdx).flatten(), (mean + stdx).flatten(), alpha=0.2, color="tab:grey")
+axs[2].set_title("Mean and Total Uncertainty (test loss = {:.4})".format(loss), loc="left")
+# mean and model var
+axs[3].plot(X, mean, color="tab:red")
+axs[3].fill_between(X.flatten(), (mean - model_stdx).flatten(), (mean + model_stdx).flatten(), alpha=0.2, color="tab:grey")
+axs[3].set_title("Mean and Model Uncertainty", loc="left")
+# mean and data var
+axs[4].plot(X, mean, color="tab:red")
+axs[4].fill_between(X.flatten(), (mean - data_stdx).flatten(), (mean + data_stdx).flatten(), alpha=0.2, color="tab:grey")
+axs[4].set_title("Mean and Data Uncertainty", loc="left")
 # preds
-preds = preds.reshape(-1, *preds.shape[2:])
-for pred in preds:
-    axs[3].plot(X, pred, color="tab:red", alpha=np.maximum(0.2, 1/len(preds)))
-axs[3].grid()
-axs[3].set_title("Predictions", loc="left")
+preds_plot = preds.reshape(-1, *preds.shape[2:])
+for pred in preds_plot:
+    axs[5].plot(X, pred, color="tab:red", alpha=np.maximum(0.2, 1/len(preds_plot)))
+axs[5].set_title("Predictions", loc="left")
 fig.savefig("mlp_model_data.png")

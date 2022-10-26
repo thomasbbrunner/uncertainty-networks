@@ -1,4 +1,5 @@
 
+from bdb import Breakpoint
 from uncertainty_networks import UncertaintyMLP
 import matplotlib.pyplot as plt
 import numpy as np
@@ -29,18 +30,20 @@ def train(T_train, X_train, model, epochs, batch_size, device, var_type):
 
             if var_type == "split_var":
                 preds, logvar = torch.split(output, [3, 3], dim=-1)
-                loss = torch.exp(-logvar)*(preds - X_batch).square() + logvar
-                loss = loss.mean()
+                logvar_clip = torch.maximum(logvar, torch.log(torch.tensor(1e-6)))
+                loss = torch.exp(-logvar_clip)*(preds - X_batch).square() + logvar_clip
+                loss = 0.5*loss.mean()
             elif var_type == "common_var":
                 preds, logvar, _ = torch.split(output, [3, 1, 2], dim=-1)
-                loss = torch.exp(-logvar)*(preds - X_batch).square() + logvar
-                loss = loss.mean()
+                logvar_clip = torch.maximum(logvar, torch.log(torch.tensor(1e-6)))
+                loss = torch.exp(-logvar_clip)*(preds - X_batch).square() + logvar_clip
+                loss = 0.5*loss.mean()
 
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
 
-        if True: #epoch % 1000 == 0 or epoch == epochs - 1:
+        if True:
             print("Epoch: {}, Loss: {:.4f}".format(epoch, epoch_loss))
 
 
@@ -60,7 +63,7 @@ def test(T_test, X_test, model, device, var_type):
             data_logvar = data_logvar.expand_as(preds)
 
         model_var, mean = torch.var_mean(preds, dim=(0, 1), unbiased=False)
-        data_var = torch.exp(torch.mean(data_logvar, dim=(0, 1)))
+        data_var = torch.mean(torch.exp(data_logvar), dim=(0, 1))
         var = model_var + data_var
         loss = (mean - X_test).square().mean()
 
@@ -78,14 +81,14 @@ main_shape = (64, 64, 64, 64)
 input_size = 1
 output_size = 6
 device = "cuda"
-epochs = 500
+epochs = 1000
 batch_size = 10000
 num_std_plot = 2
 shuffle = True
 var_type = "common_var" #"split_var"
 use_jit = True
 noise_std = 0.1
-image_name_suffix = "_var={}".format(var_type)
+image_name_suffix = "{}".format(var_type)
 
 # generate dataset
 T = np.linspace(-20, 20, 100000).reshape(-1, 1)
@@ -195,7 +198,7 @@ axs[3].set_title("Predictions", loc="left")
 preds_plot = preds.reshape(-1, *preds.shape[2:])
 for pred in preds_plot:
     axs[3].plot(pred[:,0], pred[:,1], pred[:,2], color="tab:red", alpha=np.maximum(0.2, 1/len(preds_plot)))
-fig.savefig("mlp_model_data_3d{}.png".format(image_name_suffix))
+fig.savefig("mlp_model_data_3d_1_{}.png".format(image_name_suffix))
 
 # predictions 2d
 axis_indices = [[0, 1], [2, 1], [0, 2]]
@@ -244,13 +247,13 @@ for ax, i in zip(axs[:,2], axis_indices):
     ax.set_ylabel(r"{}$\sigma$".format(num_std_plot))
     ax.set_ylim([0, 1])
     ax.plot(mean[:,i[0]], data_stdx[:,i[1]], alpha=0.2, color="tab:grey")
-fig.savefig("mlp_model_data_2d{}.png".format(image_name_suffix))
+fig.savefig("mlp_model_data_3d_2_{}.png".format(image_name_suffix))
 
 # predictions 2d wrt T
 axis_indices = [0, 1, 2]
 axis_labels = {0: "x", 1: "y", 2: "z"}
 fig = plt.figure(dpi=300, figsize=(15, 10), constrained_layout=True)
-axs = fig.subplots(4, 3, sharex=True, sharey=True)
+axs = fig.subplots(4, 3, sharex=True, sharey="row")
 for ax, i in zip(axs[:,0], axis_indices):
     ax.set_ylabel(axis_labels[i])
 for ax, i in zip(axs[-1,:], axis_indices):
@@ -259,7 +262,8 @@ for ax, i in zip(axs[-1,:], axis_indices):
 for row_ax, i in zip(axs, axis_indices):
     for j, ax in enumerate(row_ax):
         ax.grid()
-        linestyle = "--" # None
+        ax.set_ylim([-3, 3])
+        linestyle = "--"
         ax.plot(
             np.where(np.logical_or(common_noisy_mask, missing_mask), np.nan, T.flatten()),
             np.where(np.logical_or(common_noisy_mask, missing_mask), np.nan, X[:,i].flatten()),
@@ -286,10 +290,11 @@ for ax, i in zip(axs[:,1], axis_indices):
 axs[0,2].set_title("Mean and Data Uncertainty", loc="left")
 for ax, i in zip(axs[:,2], axis_indices):
     ax.plot(T, mean[:,i], alpha=0.5, color="tab:red")
-    ax.fill_between(T.flatten(), (mean[:,i] - data_stdx[:,i]).flatten(), (mean[:,i] + data_stdx[:,i]).flatten(), alpha=0.2, color="tab:grey")
+    ax.fill_between(T.flatten(), mean[:,i] - data_stdx[:,i], mean[:,i] + data_stdx[:,i], alpha=0.2, color="tab:grey")
 # plot total vars
 for ax in axs[-1]:
     ax.grid()
+    ax.set_ylim([-1, 2])
     linestyle = None
     ax.plot(
         np.where(np.logical_or(common_noisy_mask, missing_mask), np.nan, T.flatten()),
@@ -307,4 +312,4 @@ axs[-1,0].set_ylabel(r"{}$\sigma$".format(num_std_plot))
 axs[-1,0].plot(T, np.sum(stdx, axis=1), alpha=0.5, color="tab:grey")
 axs[-1,1].plot(T, np.sum(model_stdx, axis=1), alpha=0.5, color="tab:grey")
 axs[-1,2].plot(T, np.sum(data_stdx, axis=1), alpha=0.5, color="tab:grey")
-fig.savefig("mlp_model_data_2d_T{}.png".format(image_name_suffix))
+fig.savefig("mlp_model_data_3d_3_{}.png".format(image_name_suffix))

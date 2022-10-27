@@ -144,9 +144,14 @@ model = UncertaintyMLP(
 model = torch.jit.script(model) if use_jit else model
 train(T_train, X_train, model, epochs, batch_size, device, var_type)
 mean, var, model_var, data_var, preds, loss = test(T, X, model, device, var_type)
+# calc std and std of sum
 stdx = num_std_plot*np.sqrt(var)
 model_stdx = num_std_plot*np.sqrt(model_var)
 data_stdx = num_std_plot*np.sqrt(data_var)
+# attention: it is wrong to sum stds!
+stdx_sum = num_std_plot*np.sqrt(var.sum(axis=1))
+model_stdx_sum = num_std_plot*np.sqrt(model_var.sum(axis=1))
+data_stdx_sum = num_std_plot*np.sqrt(data_var.sum(axis=1))
 
 # Plotting
 # predictions 2d wrt T
@@ -206,8 +211,8 @@ for ax in axs[-1]:
         np.where(noisy_mask, 0, np.nan),
         color="tab:green", linestyle=linestyle)
 axs[-1,0].set_ylabel(r"{}$\sigma$".format(num_std_plot))
-axs[-1,0].plot(T, np.sum(stdx, axis=1), alpha=0.5, color="tab:grey")
-axs[-1,1].plot(T, np.sum(model_stdx, axis=1), alpha=0.5, color="tab:grey")
-axs[-1,2].plot(T, np.sum(data_stdx, axis=1), alpha=0.5, color="tab:grey")
+axs[-1,0].plot(T, stdx_sum, alpha=0.5, color="tab:grey")
+axs[-1,1].plot(T, model_stdx_sum, alpha=0.5, color="tab:grey")
+axs[-1,2].plot(T, data_stdx_sum, alpha=0.5, color="tab:grey")
 axs[0,0].set_ylim([-5, 20])
 fig.savefig("mlp_model_data_xd_{}.png".format(image_name_suffix))

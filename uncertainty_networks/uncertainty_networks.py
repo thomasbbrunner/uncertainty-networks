@@ -5,7 +5,7 @@ import copy
 import numpy as np
 import torch
 from torch import Tensor
-from typing import Literal, Tuple, Sequence
+from typing import Literal, Optional, Tuple, Sequence
 
 
 class MonteCarloDropout(torch.nn.modules.dropout._DropoutNd):
@@ -197,7 +197,7 @@ class UncertaintyGRU(torch.nn.Module):
                 module.reset_parameters()
 
     @torch.jit.export
-    def forward(self, input: Tensor, hidden: Tensor=None, shared_input: bool=True) -> Tuple[Tensor, Tensor]:
+    def forward(self, input: Tensor, hidden: Optional[Tensor]=None, shared_input: bool=True) -> Tuple[Tensor, Tensor]:
         # input shape:
         # (seq_len, batch, input_size)                          when shared_input is True
         # (num_models, num_passes, seq_len, batch, input_size)  when shared_input is False

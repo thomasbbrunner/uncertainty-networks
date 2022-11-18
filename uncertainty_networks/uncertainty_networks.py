@@ -65,7 +65,7 @@ class UncertaintyMLP(torch.nn.Module):
         assert initialization in ["rl", "sl"]
 
         # create model
-        model = torch.nn.ModuleList()
+        model = torch.nn.Sequential()
         for hidden_size in hidden_sizes:
             model.append(torch.nn.Linear(input_size, hidden_size))
             model.append(activation())
@@ -108,8 +108,8 @@ class UncertaintyMLP(torch.nn.Module):
         #   (num_models, num_passes, batch, input_size)   when shared_input is False
         # batch dimension can be composed of several dimensions, e.g. (sequence, batch) for RNNs.
 
-        # If shared_input is False, then run inference on individual predictions
-        # Can be used to propagate individual predictions through many modules
+        # if shared_input is False, then run inference on individual predictions
+        # can be used to propagate individual predictions through many modules
         if not shared_input:
             assert input.shape[:2] == (self._num_models, self._num_passes)
 
@@ -118,23 +118,20 @@ class UncertaintyMLP(torch.nn.Module):
             shape = (self._num_models, self._num_passes) + input.shape[:-1] + (self._output_size,)
         else:
             shape = input.shape[:-1] + (self._output_size,)
-        preds = torch.zeros(shape, device=self._device)
+        output = torch.zeros(shape, device=self._device)
 
-        # iterate over Ensemble models
+        # iterate over ensemble models
         for i, model in enumerate(self._models):
-            # iterate over passes of single MC Dropout model
+            # iterate over passes of single MC dropout model
             for j in range(self._num_passes):
                 if shared_input:
-                    layer_input = input
+                    model_input = input
                 else:
-                    layer_input = input[i, j]
+                    model_input = input[i, j]
 
-                for layer in model:
-                    layer_input = layer(layer_input)
+                output[i, j] = model(model_input)
 
-                preds[i, j] = layer_input
-
-        return preds
+        return output
 
 
 class UncertaintyGRU(torch.nn.Module):
@@ -219,8 +216,8 @@ class UncertaintyGRU(torch.nn.Module):
             shape = (self._num_models, self._num_passes) + input.shape[:-1] + (self._hidden_size,)
         else:
             shape = input.shape[:-1] + (self._hidden_size,)
-        preds = torch.zeros(shape, device=self._device)
-        hidden_out = torch.zeros_like(hidden)
+        output = torch.zeros(shape, device=self._device)
+        hidden_output = torch.zeros_like(hidden)
 
         # iterate over Ensemble models
         for i, model in enumerate(self._models):
@@ -230,21 +227,15 @@ class UncertaintyGRU(torch.nn.Module):
                     model_input = input
                 else:
                     model_input = input[i, j]
-                
-                # always have dropout enabled
-                model.training = True
-                preds[i, j], hidden_out[i, j] = model(model_input, hidden[i, j])
 
-        return preds, hidden_out
+                output[i, j], hidden_output[i, j] = model(model_input, hidden[i, j])
+
+        return output, hidden_output
 
     @torch.jit.export
     def init_hidden(self, batch_size: int) -> Tensor:
-        if False: #batch_size == None:
-            # not supported currently
-            # omit batch dimension
-            shape = (self._num_models, self._num_passes, self._num_layers, self._hidden_size)
-        else:
-            shape = (self._num_models, self._num_passes, self._num_layers, batch_size, self._hidden_size)
+
+        shape = (self._num_models, self._num_passes, self._num_layers, batch_size, self._hidden_size)
 
         # use random initial values for more diversity in uncertainty
         # some sources claim zeros is better

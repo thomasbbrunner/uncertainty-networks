@@ -104,22 +104,19 @@ class UncertaintyMLP(torch.nn.Module):
     @torch.jit.export
     def forward(self, input: Tensor, shared_input: bool=True) -> Tensor:
         # input shape:
-        #   (batch, input_size)                           when shared_input is True
-        #   (num_models, num_passes, batch, input_size)   when shared_input is False
+        #   (batch, input_size)                         when shared_input is True
+        #   (num_models*num_passes, batch, input_size)  when shared_input is False
         # batch dimension can be composed of several dimensions, e.g. (sequence, batch) for RNNs.
 
         # if shared_input is False, then run inference on individual predictions
         # can be used to propagate individual predictions through many modules
-        if not shared_input:
-            assert input.shape[:2] == (self._num_models, self._num_passes)
-
-        # include batch dimensions in shape of predictions array
         if shared_input:
-            shape = (self._num_models, self._num_passes) + input.shape[:-1] + (self._output_size,)
+            batch_dims = input.shape[:-1]
         else:
-            shape = input.shape[:-1] + (self._output_size,)
-        output = torch.zeros(shape, device=self._device)
+            batch_dims = input.shape[1:-1]
+            assert input.shape[0] == self._num_models*self._num_passes
 
+        output = []
         # iterate over ensemble models
         for i, model in enumerate(self._models):
             # iterate over passes of single MC dropout model
@@ -127,9 +124,12 @@ class UncertaintyMLP(torch.nn.Module):
                 if shared_input:
                     model_input = input
                 else:
-                    model_input = input[i, j]
+                    model_input = input[i*self._num_passes + j]
 
-                output[i, j] = model(model_input)
+                output.append(model(model_input))
+
+        output = torch.stack(output, dim=0)
+        assert output.shape == (self._num_models*self._num_passes,) + batch_dims + (self._output_size,)
 
         return output
 
@@ -194,10 +194,10 @@ class UncertaintyGRU(torch.nn.Module):
                 module.reset_parameters()
 
     @torch.jit.export
-    def forward(self, input: Tensor, hidden: Optional[Tensor]=None, shared_input: bool=True) -> Tuple[Tensor, Tensor]:
+    def forward(self, input: Tensor, hidden: Tensor, shared_input: bool=True) -> Tuple[Tensor, Tensor]:
         # input shape:
-        # (seq_len, batch, input_size)                          when shared_input is True
-        # (num_models, num_passes, seq_len, batch, input_size)  when shared_input is False
+        # (seq_len, batch, input_size)                         when shared_input is True
+        # (num_models*num_passes, seq_len, batch, input_size)  when shared_input is False
         # (for hidden see init_hidden)
 
         # If shared_input is False, then run inference on individual predictions
@@ -205,20 +205,11 @@ class UncertaintyGRU(torch.nn.Module):
         if shared_input:
             assert input.ndim == 3
         else:
-            assert input.ndim == 5
-            assert input.shape[:2] == (self._num_models, self._num_passes)
+            assert input.ndim == 4
+            assert input.shape[0] == self._num_models*self._num_passes
 
-        if hidden is None:
-            hidden = self.init_hidden(input.shape[-2])
-
-        # include sequence length and batch dimensions in shape of predictions array
-        if shared_input:
-            shape = (self._num_models, self._num_passes) + input.shape[:-1] + (self._hidden_size,)
-        else:
-            shape = input.shape[:-1] + (self._hidden_size,)
-        output = torch.zeros(shape, device=self._device)
-        hidden_output = torch.zeros_like(hidden)
-
+        output = []
+        hidden_output = []
         # iterate over Ensemble models
         for i, model in enumerate(self._models):
             # iterate over passes of single MC Dropout model
@@ -226,16 +217,24 @@ class UncertaintyGRU(torch.nn.Module):
                 if shared_input:
                     model_input = input
                 else:
-                    model_input = input[i, j]
+                    model_input = input[i*self._num_passes + j]
 
-                output[i, j], hidden_output[i, j] = model(model_input, hidden[i, j])
+                res = model(model_input, hidden[i*self._num_passes + j])
+                output.append(res[0])
+                hidden_output.append(res[1])
+
+        output = torch.stack(output, dim=0)
+        hidden_output = torch.stack(hidden_output, dim=0)
+
+        assert output.shape == (self._num_models*self._num_passes,) + input.shape[-3:-1] + (self._hidden_size,)
+        assert hidden_output.shape == hidden.shape
 
         return output, hidden_output
 
     @torch.jit.export
     def init_hidden(self, batch_size: int) -> Tensor:
 
-        shape = (self._num_models, self._num_passes, self._num_layers, batch_size, self._hidden_size)
+        shape = (self._num_models*self._num_passes, self._num_layers, batch_size, self._hidden_size)
 
         # use random initial values for more diversity in uncertainty
         # some sources claim zeros is better

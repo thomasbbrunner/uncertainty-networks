@@ -49,8 +49,8 @@ def test(X_test, y_test, model, device):
         output = model(X_test)
         preds, data_logvar = torch.split(output, [1, 1], dim=-1)
 
-        model_var, mean = torch.var_mean(preds, dim=(0, 1), unbiased=False)
-        data_var = torch.exp(torch.mean(data_logvar, dim=(0, 1)))
+        model_var, mean = torch.var_mean(preds, dim=0, unbiased=False)
+        data_var = torch.exp(torch.mean(data_logvar, dim=0))
         var = model_var + data_var
         loss = (mean - y_test).square().mean()
 
@@ -149,7 +149,7 @@ axs[4].plot(X, mean, color="tab:red")
 axs[4].fill_between(X.flatten(), (mean - data_stdx).flatten(), (mean + data_stdx).flatten(), alpha=0.2, color="tab:grey")
 axs[4].set_title("Mean and Data Uncertainty", loc="left")
 # preds
-preds_plot = preds.reshape(-1, *preds.shape[2:])
+preds_plot = preds.reshape(-1, *preds.shape[1:])
 for pred in preds_plot:
     axs[5].plot(X, pred, color="tab:red", alpha=np.maximum(0.2, 1/len(preds_plot)))
 axs[5].set_title("Predictions", loc="left")

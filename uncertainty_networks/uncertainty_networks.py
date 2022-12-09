@@ -65,7 +65,7 @@ class UncertaintyMLP(torch.nn.Module):
         assert initialization in ["rl", "sl"]
 
         # create model
-        model = torch.nn.Sequential()
+        model = []
         for hidden_size in hidden_sizes:
             model.append(torch.nn.Linear(input_size, hidden_size))
             model.append(activation())
@@ -73,6 +73,7 @@ class UncertaintyMLP(torch.nn.Module):
                 model.append(MonteCarloDropout(dropout_prob))
             input_size = hidden_size
         model.append(torch.nn.Linear(input_size, self._output_size))
+        model = torch.nn.Sequential(*model)
 
         # create ensemble
         self._models = torch.nn.ModuleList()

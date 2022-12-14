@@ -5,7 +5,7 @@ import copy
 import numpy as np
 import torch
 from torch import Tensor
-from typing import Literal, Optional, Tuple, Sequence
+from typing import Literal, Tuple, Sequence
 
 
 class MonteCarloDropout(torch.nn.modules.dropout._DropoutNd):
@@ -22,25 +22,17 @@ class UncertaintyMLP(torch.nn.Module):
     References:
     - "Dropout as a Bayesian Approximation" https://arxiv.org/abs/1506.02142
     - "Simple and Scalable Predictive Uncertainty Estimation using Deep Ensembles" https://arxiv.org/abs/1612.01474
+    - https://xuwd11.github.io/Dropout_Tutorial_in_PyTorch/#5-dropout-as-bayesian-approximation
 
-    Sample implementations:
-    https://xuwd11.github.io/Dropout_Tutorial_in_PyTorch/#5-dropout-as-bayesian-approximation
-
-
-    Args:
-        model_precision: user-defined value that encodes how well model should fit the data. This
-            parameter is inversely proportional to weight regularization. It is called tau in the
-            paper and tau > 0 (see Appendix 4.2).
+    Implementation notes:
+    - with MC Dropout network should be larger than without
+    - weights of ensemble models should be initialized with different values
+    - loss should be applied to individual predictions of the models
+    - order of training data should be randomized
+    - weight regularization did not help
+    - MC Dropout paper used model precision derived from data, which was omitted here
+    - Deep ensembles paper outputted parameters of gaussian to form GMM, which was omitted here
     """
-    # TODO important considerations:
-    # - with MC Dropout, network should be larger
-    # - weights should be initialized with different values
-    # - account for variance in the loss or train with individual predictions
-    # - (ideally) different order for data
-    # - weight regularization did not help
-    # - mc dropout paper used model precision derived from data, which was omitted here
-    # - deep ensemble paper outputted parameters of gaussian to form GMM, which was omitted here
-    # - (ideally) variance should be calibrated
 
     def __init__(
             self,
@@ -137,6 +129,13 @@ class UncertaintyMLP(torch.nn.Module):
 
 class UncertaintyGRU(torch.nn.Module):
     """
+    References:
+    - "Dropout as a Bayesian Approximation" https://arxiv.org/abs/1506.02142
+    - "Simple and Scalable Predictive Uncertainty Estimation using Deep Ensembles" https://arxiv.org/abs/1612.01474
+    - https://xuwd11.github.io/Dropout_Tutorial_in_PyTorch/#5-dropout-as-bayesian-approximation
+
+    Implementation notes:
+    (see UncertaintyMLP module)
     """
 
     def __init__(
@@ -199,7 +198,8 @@ class UncertaintyGRU(torch.nn.Module):
         # input shape:
         # (seq_len, batch, input_size)                         when shared_input is True
         # (num_models*num_passes, seq_len, batch, input_size)  when shared_input is False
-        # (for hidden see init_hidden)
+        # hidden shape:
+        # (num_models*num_passes, num_layers, batch_size, hidden_size)
 
         # If shared_input is False, then run inference on individual predictions
         # Can be used to propagate individual predictions through many modules
@@ -246,86 +246,10 @@ class UncertaintyGRU(torch.nn.Module):
         return hidden
 
 
-class UncertaintyPFGRU(torch.nn.Module):
-    """
-    TODO:
-        - enable inference on individual predictions (like the other networks)
-    """
-
-    def __init__(
-            self,
-            input_size: int,
-            hidden_size: int,
-            output_size: int,
-            num_layers: int,
-            num_particles: int,
-            dropout_prob: float,
-            resamp_alpha: float,
-            device: str):
-
-        super().__init__()
-
-        self._hidden_size = hidden_size
-        self._num_layers = num_layers
-        self._num_particles = num_particles
-        self._device = device
-
-        self._pfgru = PFGRU(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_particles=num_particles,
-            num_layers=num_layers,
-            dropout_prob=dropout_prob,
-            resamp_alpha=resamp_alpha,
-            device=device)
-
-        self.reset_parameters()
-
-        self.to(device)
-
-    def forward(self, input: torch.Tensor, hidden: Tuple[torch.Tensor, torch.Tensor]):
-
-        preds, hidden = self._pfgru(input, hidden)
-        # preds have shape (num_particles, seq_len, batch, output_size)
-
-        # calculate mean and variance of particles
-        # Paper's code used sum over particles instead of mean.
-        # However, this was before activation and linear layers.
-        # Also, when we train on individual predictions the sum of outputs is scaled wrongly
-        # TODO maybe with elbo loss we can use the sum?
-        # output_sum = torch.sum(preds, dim=0)
-        output_var, output_mean = torch.var_mean(preds, dim=0, unbiased=False)
-
-        return output_mean, output_var, preds, hidden
-
-    def reset_parameters(self):
-        for layer in self.modules():
-            if isinstance(layer, torch.nn.Linear):
-                # reset weights *and* biases
-                layer.reset_parameters()
-            elif isinstance(layer, torch.nn.BatchNorm1d):
-                # reset weights *and* biases
-                layer.reset_parameters()
-
-    def init_hidden(self, batch_size=None):
-        # use random initial values for more diversity
-        # func = torch.zeros
-        func = torch.rand
-        if batch_size is None:
-            batch_size = 1
-        h0 = func(
-            (self._num_layers, batch_size * self._num_particles, self._hidden_size), 
-            device=self._device)
-        p0 = np.log(1 / self._num_particles) * torch.ones(
-            (self._num_layers, batch_size * self._num_particles, 1),
-            device=self._device)
-        hidden = (h0, p0)
-
-        return hidden
-
-
 class UncertaintyNetwork(torch.nn.Module):
-    # consists of MLP -> RNN -> MLP
+    """
+    Uncertainty module consisting of MLP + GRU + MLP for convenience.
+    """
 
     def __init__(
             self,
@@ -382,7 +306,7 @@ class UncertaintyNetwork(torch.nn.Module):
         self.mlp2.reset_parameters()
 
     @torch.jit.export
-    def forward(self, input: Tensor, hidden: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    def forward(self, input: Tensor, hidden: Tensor) -> Tuple[Tensor, Tensor]:
 
         # include sequence dimension if not present
         added_seq_dim = False
@@ -392,19 +316,15 @@ class UncertaintyNetwork(torch.nn.Module):
         assert input.ndim == 3
         assert input.shape[-2] == hidden.shape[-2]
 
-        preds = self.mlp1(input=input)
+        preds = self.mlp1(input)
         preds, hidden = self.rnn(preds, hidden=hidden, shared_input=False)
         preds = self.mlp2(preds, shared_input=False)
 
-        var, mean = torch.var_mean(preds, dim=(0, 1), unbiased=False)
-
         # remove sequence length dimension only if it was not present
         if added_seq_dim:
-            mean = torch.squeeze(mean, dim=0)
-            var = torch.squeeze(var, dim=0)
             preds = torch.squeeze(preds, dim=-3)
 
-        return mean, var, preds, hidden
+        return preds, hidden
 
     @torch.jit.export
     def init_hidden(self, batch_size: int) -> Tensor:

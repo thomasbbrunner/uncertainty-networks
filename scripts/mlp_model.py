@@ -9,8 +9,7 @@ torch.manual_seed(0)
 np.random.seed(0)
 
 
-def train(X_train, y_train, model, epochs, device, shuffle, loss_type):
-    loss_fn = torch.nn.MSELoss()
+def train(X_train, y_train, model, epochs, device, shuffle):
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     X_train = torch.Tensor(X_train).to(device)
     y_train = torch.Tensor(y_train).to(device)
@@ -27,27 +26,13 @@ def train(X_train, y_train, model, epochs, device, shuffle, loss_type):
             optimizer.zero_grad()
 
             x, y = batch
-            means, vars, preds = model(x)
+            preds = model(x)
 
-            if loss_type == "pred":
-                # flatten dimensions of forward passes or particles
-                # we want our tensor to have shape:
-                # (num_model*num_passes, batch, output_size)
-                preds = preds.flatten(0, preds.dim() - 3)
-                # repeat desired output to match shape of predictions 
-                y_repeat = y.unsqueeze(0).repeat_interleave(preds.shape[0], 0)
-                assert y_repeat.shape == preds.shape
-
-            # loss on mean
-            if loss_type == "mean":
-                loss = loss_fn(means, y)
-            # loss on mean with variance
-            elif loss_type == "var":
-                loss = loss_fn(means, y) + 0.01*vars.mean()
-            # loss on each prediction
-            elif loss_type == "pred":
-                loss = loss_fn(preds, y_repeat)
-
+            # loss on each individual prediction
+            # preds have shape (num_models*num_passes, output_size)
+            # y has shape (output_size)
+            # pytorch automatically applies broadcasting in the subtraction
+            loss = 0.5*torch.mean(torch.square(preds - y))
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
@@ -57,14 +42,15 @@ def train(X_train, y_train, model, epochs, device, shuffle, loss_type):
 
 
 def test(X_test, y_test, model, device):
-    loss_fn = torch.nn.MSELoss()
     with torch.no_grad():
         X_test = torch.Tensor(X_test).to(device)
         y_test = torch.Tensor(y_test).to(device)
         model.eval()
         model.to(device)
-        mean, var, preds = model(X_test)
-        loss = loss_fn(mean, y_test)
+        preds = model(X_test)
+        # compute model uncertainty from predictions
+        var, mean = torch.var_mean(preds, dim=0, unbiased=False)
+        loss = (mean - y_test).square().mean()
         return (
             mean.to("cpu").numpy(),
             var.to("cpu").numpy(),
@@ -77,14 +63,11 @@ def test(X_test, y_test, model, device):
 main_shape = (64, 64, 64, 64)
 input_size = 1
 output_size = 1
-device = "cuda"
-epochs = 10000
+device = "cpu"
+epochs = 5
 num_std_plot = 3
-# TODO hyperparameters
 shuffle = True
-loss_type = "pred"
 use_jit = True
-image_name_suffix = "_loss={}_jit={}".format(loss_type, use_jit)
 
 # generate dataset
 X = np.linspace(-10, 10, 1000).reshape(-1, 1)
@@ -109,7 +92,7 @@ mlp_0 = UncertaintyMLP(
     activation=torch.nn.LeakyReLU,
     device=device)
 mlp_0 = torch.jit.script(mlp_0) if use_jit else mlp_0
-train(X_train, y_train, mlp_0, epochs, device, shuffle, "pred")
+train(X_train, y_train, mlp_0, epochs, device, shuffle)
 y_0, var_0, pred_0, loss_0 = test(X, y, mlp_0, device)
 
 # train MC Dropout
@@ -124,7 +107,7 @@ mlp_1 = UncertaintyMLP(
     activation=torch.nn.LeakyReLU,
     device=device)
 mlp_1 = torch.jit.script(mlp_1) if use_jit else mlp_1
-train(X_train, y_train, mlp_1, epochs, device, shuffle, loss_type)
+train(X_train, y_train, mlp_1, epochs, device, shuffle)
 y_1, var_1, pred_1, loss_1 = test(X, y, mlp_1, device)
 
 # train Deep Ensamble
@@ -139,7 +122,7 @@ mlp_2 = UncertaintyMLP(
     activation=torch.nn.LeakyReLU,
     device=device)
 mlp_2 = torch.jit.script(mlp_2) if use_jit else mlp_2
-train(X_train, y_train, mlp_2, epochs, device, shuffle, loss_type)
+train(X_train, y_train, mlp_2, epochs, device, shuffle)
 y_2, var_2, pred_2, loss_2 = test(X, y, mlp_2, device)
 
 # train Deep Ensamble with MC Dropout
@@ -154,7 +137,7 @@ mlp_3 = UncertaintyMLP(
     activation=torch.nn.LeakyReLU,
     device=device)
 mlp_3 = torch.jit.script(mlp_3) if use_jit else mlp_3
-train(X_train, y_train, mlp_3, epochs, device, shuffle, loss_type)
+train(X_train, y_train, mlp_3, epochs, device, shuffle)
 y_3, var_3, pred_3, loss_3 = test(X, y, mlp_3, device)
 
 # train Deep Ensamble with MC Dropout
@@ -169,39 +152,13 @@ mlp_4 = UncertaintyMLP(
     activation=torch.nn.LeakyReLU,
     device=device)
 mlp_4 = torch.jit.script(mlp_4) if use_jit else mlp_4
-train(X_train, y_train, mlp_4, epochs, device, shuffle, loss_type)
+train(X_train, y_train, mlp_4, epochs, device, shuffle)
 y_4, var_4, pred_4, loss_4 = test(X, y, mlp_4, device)
 
 # Plotting
 
-# Thesis Figure
-y_plot = y_2.flatten()
-std_plot = num_std_plot*np.sqrt(var_2.flatten())
-pred_plot = pred_2
-fig = plt.figure(dpi=300, figsize=(7, 7), constrained_layout=True)
-axs = fig.subplots(3)
-axs[0].set_title("Dataset")
-for i in train_indices:
-    axs[0].plot(X[i], y[i], color="tab:blue")
-for i in test_indices:
-    axs[0].plot(X[i], y[i], color="tab:orange")
-
-for ax in axs.flatten()[1:]:
-    for i in train_indices:
-        ax.plot(X[i], y[i], color="tab:blue", linestyle="--")
-    for i in test_indices:
-        ax.plot(X[i], y[i], color="tab:orange", linestyle="--")
-axs[1].set_title(r"Final Predictions ({}$\sigma$)".format(num_std_plot))
-axs[1].plot(X, y_plot, color="tab:red")
-axs[1].fill_between(X.flatten(), y_plot - std_plot, y_plot + std_plot, alpha=0.2, color="tab:grey")
-axs[2].set_title("Individual Predictions")
-preds = pred_plot.reshape(-1, *pred_plot.shape[2:])
-for pred in preds:
-    axs[2].plot(X, pred, color="tab:red", alpha=np.maximum(0.2, 1/len(preds)))
-fig.savefig("uncertainty_mlp.png")
-
 # Dataset and Deterministic Baseline
-fig = plt.figure(dpi=300, figsize=(14, 7), constrained_layout=True)
+fig = plt.figure(dpi=300, figsize=(6, 4), constrained_layout=True)
 axs = fig.subplots(2)
 # plot function
 axs[0].set_title("Ground Truth Data", loc="left")
@@ -218,11 +175,11 @@ for i in train_indices:
 for i in test_indices:
     axs[1].plot(X[i], y[i], color="tab:orange", linestyle="--")
 axs[1].plot(X, y_0.flatten(), color="tab:red")
-fig.savefig("uncertainty_mlp_baseline.png")
+fig.savefig("mlp_model_baseline.png")
 
 # Uncertainty MLPs
-fig = plt.figure(dpi=300, figsize=(28, 14), constrained_layout=True)
-axs = np.array(fig.subplots(4, 4))
+fig = plt.figure(dpi=300, figsize=(12, 9), constrained_layout=True)
+axs = np.array(fig.subplots(4, 2))
 y_plot = np.array([y_1.flatten(), y_2.flatten(), y_3.flatten(), y_4.flatten()])
 std_plot = num_std_plot*np.sqrt(np.array([var_1.flatten(), var_2.flatten(), var_3.flatten(), var_4.flatten()]))
 pred_plot = [pred_1, pred_2, pred_3, pred_4]
@@ -246,19 +203,6 @@ for i, ax in enumerate(axs[:, 0]):
 # plot predictions
 axs[0, 1].set_title(r"Individual Predictions")
 for i, ax in enumerate(axs[:, 1]):
-    preds = pred_plot[i].reshape(-1, *pred_plot[i].shape[2:])
-    for pred in preds:
-        ax.plot(X, pred, color="tab:red", alpha=np.maximum(0.2, 1/len(preds)))
-# plot predictions of Ensemlbes (mean over MC Dropout MLPs)
-axs[0, 2].set_title(r"Individual Predictions of Ensembles")
-for i, ax in enumerate(axs[:, 2]):
-    preds = pred_plot[i].mean(axis=1)
-    for pred in preds:
-        ax.plot(X, pred, color="tab:red", alpha=np.maximum(0.2, 1/len(preds)))
-# plot predictions of MC Dropout MLPs (mean over Ensembles)
-axs[0, 3].set_title(r"Individual Predictions of MC Dropouts")
-for i, ax in enumerate(axs[:, 3]):
-    preds = pred_plot[i].mean(axis=0)
-    for pred in preds:
-        ax.plot(X, pred, color="tab:red", alpha=np.maximum(0.2, 1/len(preds)))
-fig.savefig("uncertainty_mlp{}.png".format(image_name_suffix))
+    for pred in pred_plot[i]:
+        ax.plot(X, pred, color="tab:red", alpha=np.maximum(0.2, 1/len(pred_plot[i])))
+fig.savefig("mlp_model.png")

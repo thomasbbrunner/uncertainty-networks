@@ -1,2 +1,2 @@
 
-from .uncertainty_networks import UncertaintyGRU, UncertaintyMLP, UncertaintyNetwork, UncertaintyPFGRU
+from .uncertainty_networks import UncertaintyGRU, UncertaintyMLP, UncertaintyNetwork

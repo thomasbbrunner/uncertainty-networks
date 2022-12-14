@@ -220,3 +220,81 @@ class PFGRU(torch.nn.Module):
         probs = torch.stack(probs, dim=0)
 
         return output, (hidden, probs)
+
+
+class UncertaintyPFGRU(torch.nn.Module):
+    """
+    TODO:
+        - enable inference on individual predictions (like the other networks)
+    """
+
+    def __init__(
+            self,
+            input_size: int,
+            hidden_size: int,
+            output_size: int,
+            num_layers: int,
+            num_particles: int,
+            dropout_prob: float,
+            resamp_alpha: float,
+            device: str):
+
+        super().__init__()
+
+        self._hidden_size = hidden_size
+        self._num_layers = num_layers
+        self._num_particles = num_particles
+        self._device = device
+
+        self._pfgru = PFGRU(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_particles=num_particles,
+            num_layers=num_layers,
+            dropout_prob=dropout_prob,
+            resamp_alpha=resamp_alpha,
+            device=device)
+
+        self.reset_parameters()
+
+        self.to(device)
+
+    def forward(self, input: torch.Tensor, hidden: Tuple[torch.Tensor, torch.Tensor]):
+
+        preds, hidden = self._pfgru(input, hidden)
+        # preds have shape (num_particles, seq_len, batch, output_size)
+
+        # calculate mean and variance of particles
+        # Paper's code used sum over particles instead of mean.
+        # However, this was before activation and linear layers.
+        # Also, when we train on individual predictions the sum of outputs is scaled wrongly
+        # TODO maybe with elbo loss we can use the sum?
+        # output_sum = torch.sum(preds, dim=0)
+        output_var, output_mean = torch.var_mean(preds, dim=0, unbiased=False)
+
+        return output_mean, output_var, preds, hidden
+
+    def reset_parameters(self):
+        for layer in self.modules():
+            if isinstance(layer, torch.nn.Linear):
+                # reset weights *and* biases
+                layer.reset_parameters()
+            elif isinstance(layer, torch.nn.BatchNorm1d):
+                # reset weights *and* biases
+                layer.reset_parameters()
+
+    def init_hidden(self, batch_size=None):
+        # use random initial values for more diversity
+        # func = torch.zeros
+        func = torch.rand
+        if batch_size is None:
+            batch_size = 1
+        h0 = func(
+            (self._num_layers, batch_size * self._num_particles, self._hidden_size), 
+            device=self._device)
+        p0 = np.log(1 / self._num_particles) * torch.ones(
+            (self._num_layers, batch_size * self._num_particles, 1),
+            device=self._device)
+        hidden = (h0, p0)
+
+        return hidden
